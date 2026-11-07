@@ -497,8 +497,10 @@ public class PlanService {
                 picked.addAll(pool.stream().limit(2).collect(Collectors.toList()));
             }
             if (picked.size() < 3) {
+                final List<Exercise> pickedSnapshot = picked;
+                final int need = 3 - picked.size();
                 picked.addAll(byMuscle.values().stream().flatMap(List::stream)
-                        .filter(e -> !picked.contains(e)).limit(3 - picked.size())
+                        .filter(e -> !pickedSnapshot.contains(e)).limit(need)
                         .collect(Collectors.toList()));
             }
             picked = picked.stream().distinct().limit(sessionMinutes <= 30 ? 4 : 5).collect(Collectors.toList());
