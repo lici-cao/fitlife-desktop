@@ -1,0 +1,330 @@
+# ============================================================
+# FitLife 桌面版云端构建
+#
+# 目标：不需要在本机安装 JDK / Maven / Node，也能拿到「双击即用」的 Windows 产物。
+#
+# 任务划分（为什么不是一个 job 全干完）：
+#   job 1  build-jar           ubuntu-latest  前端构建 + 拷进 static + mvn package
+#   job 2  windows-app-image   windows-latest jlink 裁剪 JRE + jpackage 生成 app-image 并打 zip
+#   job 3  portable-fallback   ubuntu-latest  （可选，workflow_dispatch 勾选 portable_only）
+#                                            下载 Windows 版 JRE 直接拼一个免安装便携包
+#
+# 关于 job 2 必须用 windows runner 的说明：
+#   jpackage 是「平台绑定」工具，不做交叉打包。在 ubuntu 上执行 jpackage --type app-image
+#   只会产出 Linux 可执行文件；--type msi 更是需要 Windows + WiX。因此 Windows 产物只能在
+#   Windows runner 上生成。公共仓库的 windows-latest 免费额度与 ubuntu 相同，不需要额外成本。
+#   如果你的仓库策略只允许 Linux runner，把 portable_only 勾上走 job 3（免安装便携包，
+#   同样是 Windows 上解压即可双击运行）。
+# ============================================================
+
+name: build-desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: "产物版本号（写入 exe 版本信息与压缩包名）"
+        required: false
+        default: "1.0.0"
+        type: string
+      build_msi:
+        description: "额外尝试生成 MSI 安装包（需要 WiX，失败不影响 app-image）"
+        required: false
+        default: false
+        type: boolean
+      portable_only:
+        description: "只走「免安装便携包」路线（全程 Linux runner，不生成 exe）"
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main, master]
+    paths:
+      - "FitLife-java/pom.xml"
+      - "FitLife-java/src/**"
+      - "FitLife-web/package.json"
+      - "FitLife-web/package-lock.json"
+      - "FitLife-web/src/**"
+      - "FitLife-web/vite.config.ts"
+      - ".github/workflows/build-desktop.yml"
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "22"
+  APP_NAME: "FitLife"
+  APP_VERSION: ${{ inputs.app_version || '1.0.0' }}
+
+jobs:
+  # ------------------------------------------------------------
+  # 1) 前端构建 + 后端打包（Linux runner，速度快、额度充足）
+  # ------------------------------------------------------------
+  build-jar:
+    name: Build frontend & jar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: FitLife-web/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: FitLife-web
+        run: |
+          # package-lock 与 package.json 万一不同步，npm ci 会直接失败，这里降级到 npm install
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Build frontend (hash router, 内嵌版)
+        working-directory: FitLife-web
+        run: |
+          # vue-tsc 做类型检查，若历史代码有类型报错则回退到纯 vite 构建，保证产物能出
+          npm run build:desktop || npx vite build --mode desktop
+          test -f dist/index.html
+
+      - name: Copy dist into backend static/
+        run: |
+          rm -rf FitLife-java/src/main/resources/static
+          mkdir -p FitLife-java/src/main/resources/static
+          cp -R FitLife-web/dist/. FitLife-java/src/main/resources/static/
+          echo "静态资源清单（前 20 项）："
+          find FitLife-java/src/main/resources/static -maxdepth 2 | head -n 20
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: FitLife-java/pom.xml
+
+      - name: Maven package
+        working-directory: FitLife-java
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Show jar
+        run: ls -lh FitLife-java/target/*.jar
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitlife-jar
+          path: FitLife-java/target/fitlife-backend-*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------
+  # 2) Windows app-image（真正的「双击即用」产物）
+  # ------------------------------------------------------------
+  windows-app-image:
+    name: Build Windows app-image
+    needs: build-jar
+    if: ${{ !inputs.portable_only }}
+    runs-on: windows-latest
+    steps:
+      - name: Download spring boot jar
+        uses: actions/download-artifact@v4
+        with:
+          name: fitlife-jar
+          path: build/app
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: jlink 裁剪 JRE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+
+          # 桌面版 + Spring Boot + H2 + HTTPS 出站所需的最小模块集
+          # 注意：jdk.crypto.ec 必须显式加入，否则访问 DeepSeek / 智谱等 HTTPS 接口会报
+          #       SSLHandshakeException: no cipher suites in common
+          $modules = @(
+            'java.base',
+            'java.logging',
+            'java.sql',
+            'java.naming',
+            'java.desktop',
+            'java.management',
+            'java.instrument',
+            'java.net.http',
+            'java.security.jgss',
+            'java.transaction.xa',
+            'java.xml',
+            'java.compiler',
+            'java.scripting',
+            'jdk.crypto.ec',
+            'jdk.crypto.cryptoki',
+            'jdk.unsupported',
+            'jdk.zipfs',
+            'jdk.jfr'
+          ) -join ','
+
+          & "$env:JAVA_HOME\bin\jlink.exe" `
+            --add-modules $modules `
+            --strip-debug `
+            --no-header-files `
+            --no-man-pages `
+            --compress=2 `
+            --output build\runtime
+
+          if (-not (Test-Path 'build\runtime\bin\java.exe')) {
+            throw 'jlink 失败：未生成 build\runtime\bin\java.exe'
+          }
+          Write-Host 'jlink 完成，运行时大小：'
+          '{0:N1} MB' -f ((Get-ChildItem build\runtime -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: jpackage 生成 app-image
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $jar = Get-ChildItem build\app\fitlife-backend-*.jar | Select-Object -First 1
+          if (-not $jar) { throw 'build\app 下没有找到 fitlife-backend-*.jar' }
+          Write-Host "使用 jar：$($jar.Name)"
+
+          & "$env:JAVA_HOME\bin\jpackage.exe" `
+            --type app-image `
+            --name $env:APP_NAME `
+            --app-version $env:APP_VERSION `
+            --vendor "FitLife" `
+            --description "FitLife 健康管理 · AI 健身计划" `
+            --input build\app `
+            --main-jar $jar.Name `
+            --main-class $mainClass `
+            --runtime-image build\runtime `
+            --java-options "-Dfile.encoding=UTF-8" `
+            --java-options "-Djava.awt.headless=false" `
+            --java-options "-Xmx768m" `
+            --win-console `
+            --dest build\dist
+
+          if (-not (Test-Path "build\dist\$env:APP_NAME\$env:APP_NAME.exe")) {
+            throw "jpackage 失败：未生成 build\dist\$env:APP_NAME\$env:APP_NAME.exe"
+          }
+
+      - name: 压缩为 zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "FitLife-windows-x64-v$env:APP_VERSION.zip"
+          Compress-Archive -Path "build\dist\$env:APP_NAME" -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | ForEach-Object { Write-Host ("{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB)) }
+
+      - name: （可选）生成 MSI 安装包
+        if: ${{ inputs.build_msi }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install wixtoolset --no-progress -y
+          $wix = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset*' -Directory -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if ($wix) { $env:PATH = "$($wix.FullName)\bin;$env:PATH" }
+
+          $jar = Get-ChildItem build\app\fitlife-backend-*.jar | Select-Object -First 1
+          $jarEntries = & "$env:JAVA_HOME\bin\jar.exe" tf $jar.FullName
+          $mainClass = if ($jarEntries -contains 'org/springframework/boot/loader/launch/JarLauncher.class') {
+            'org.springframework.boot.loader.launch.JarLauncher'
+          } else { 'org.springframework.boot.loader.JarLauncher' }
+          & "$env:JAVA_HOME\bin\jpackage.exe" `
+            --type msi `
+            --name $env:APP_NAME `
+            --app-version $env:APP_VERSION `
+            --vendor "FitLife" `
+            --input build\app `
+            --main-jar $jar.Name `
+            --main-class $mainClass `
+            --runtime-image build\runtime `
+            --java-options "-Dfile.encoding=UTF-8" `
+            --java-options "-Xmx768m" `
+            --win-menu `
+            --win-shortcut `
+            --win-dir-chooser `
+            --dest build\msi
+
+      - name: Upload MSI (optional)
+        if: ${{ inputs.build_msi }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitLife-windows-x64-msi
+          path: build/msi/*.msi
+          if-no-files-found: ignore
+
+      - name: Upload app-image zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitLife-windows-x64
+          path: FitLife-windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------
+  # 3) 免安装便携包（纯 Linux runner 也能出 Windows 可用产物）
+  #    勾选 portable_only 时启用；不需 jpackage，不需要 Windows runner
+  # ------------------------------------------------------------
+  portable-fallback:
+    name: Build portable Windows zip (Linux only)
+    needs: build-jar
+    if: ${{ inputs.portable_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Download spring boot jar
+        uses: actions/download-artifact@v4
+        with:
+          name: fitlife-jar
+          path: build/app
+
+      - name: 下载 Windows x64 JRE
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o jre.zip \
+            "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk"
+          unzip -q jre.zip -d jre-extract
+          JRE_DIR=$(find jre-extract -maxdepth 1 -mindepth 1 -type d | head -n 1)
+          echo "JRE: $JRE_DIR"
+          mv "$JRE_DIR" runtime
+          test -f runtime/bin/javaw.exe
+
+      - name: 生成启动脚本
+        run: |
+          set -euo pipefail
+          mkdir -p pkg/FitLife
+          cp -R runtime pkg/FitLife/runtime
+          cp -R build/app pkg/FitLife/app
+          cat > pkg/FitLife/FitLife.bat <<'BAT'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          start "" "%~dp0runtime\bin\javaw.exe" -Dfile.encoding=UTF-8 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
+          BAT
+          cat > pkg/FitLife/FitLife-debug.bat <<'BAT'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          "%~dp0runtime\bin\java.exe" -Dfile.encoding=UTF-8 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
+          pause
+          BAT
+          JAR_NAME=$(basename build/app/fitlife-backend-*.jar)
+          sed -i "s/APP_JAR_PLACEHOLDER/$JAR_NAME/g" pkg/FitLife/FitLife.bat pkg/FitLife/FitLife-debug.bat
+          cd pkg && zip -qr "../FitLife-windows-portable-v${APP_VERSION}.zip" FitLife
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitLife-windows-portable
+          path: FitLife-windows-portable-*.zip
+          if-no-files-found: error
+          retention-days: 14

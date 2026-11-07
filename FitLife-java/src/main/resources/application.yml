@@ -1,0 +1,168 @@
+# ============================================================
+# FitLife 桌面版（独立安装包）配置
+#
+# 打包成 exe 后，本文件被压在 jar 内，用户改不到。因此：
+#   * 可变的配置全部走「环境变量 + 用户目录外部配置」两层；
+#   * 用户的外部配置放在  %USERPROFILE%\.fitlife\config\  下，
+#     首次启动会自动生成 ai-key.yml 模板，改完重启即生效；
+#   * 数据文件同样落在 %USERPROFILE%\.fitlife\data\，卸载重装不丢数据。
+# ============================================================
+
+server:
+  # 桌面版只对本机开放，避免把个人健康数据暴露到局域网
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  # 端口可配置；被占用时 DesktopBootstrap 会自动顺延到下一个空闲端口
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  application:
+    name: fitlife
+
+  # 外部配置加载顺序（后加载的覆盖前面的）：
+  #   1) 随包内置的本文件
+  #   2) 用户目录 config/ 下的 ai-key.yml（AI Key、默认模型）
+  #   3) 用户目录 config/ 下的 application.yml（任何自定义覆盖）
+  # 目录不存在时 optional: 前缀会让 Spring 静默跳过，不会启动失败。
+  config:
+    import:
+      - optional:file:${FITLIFE_HOME:${user.home}/.fitlife}/config/ai-key.yml
+      - optional:file:${FITLIFE_HOME:${user.home}/.fitlife}/config/application.yml
+
+  # ---------------- 数据源：内置 H2 文件模式，无需安装数据库 ----------------
+  # MODE=MySQL               按 MySQL 语法解析 SQL，兼容原项目的建表/查询习惯
+  # DATABASE_TO_LOWER=TRUE   表名统一小写，避免 H2 把表名转大写导致映射不上
+  # CASE_INSENSITIVE_IDENTIFIERS=TRUE  标识符大小写不敏感
+  # NON_KEYWORDS=USER,VALUE,KEY,DATE,DAY  把这些 MySQL 里的普通词从 H2 关键字表里剔除
+  datasource:
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:file:${FITLIFE_HOME:${user.home}/.fitlife}/data/fitlife;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;NON_KEYWORDS=USER,VALUE,KEY,DATE,DAY
+    username: ${DB_USER:sa}
+    password: ${DB_PASS:}
+
+  h2:
+    console:
+      # 需要直接看数据库时改成 true，然后访问 /h2-console
+      enabled: ${H2_CONSOLE:false}
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: ${SHOW_SQL:false}
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+        # 不再指定 MySQLDialect：交给 Hibernate 6 按驱动自动识别（H2 会走 H2Dialect）
+
+jwt:
+  secret: ${JWT_SECRET:fitlife-secret-key-at-least-256-bits-long-for-jwt-signing}
+  expiration: 604800000  # 7天
+
+# ---------------- 桌面版行为开关 ----------------
+fitlife:
+  desktop:
+    # 启动完成后自动用系统浏览器打开界面
+    open-browser: ${FITLIFE_OPEN_BROWSER:true}
+    # 首次启动且用户表为空时，创建演示账号 demo / 123456
+    demo-account: ${FITLIFE_DEMO_ACCOUNT:true}
+
+# ============================================================
+# AI 模型配置
+#
+# 三家都走 OpenAI 兼容的 /chat/completions，换厂商只需改配置，不用改代码。
+# Key 一律从环境变量 / 用户外部配置读取，仓库里不再内置任何真实 Key。
+# 没配 Key 的厂商会在前端模型列表里置灰提示，其余功能不受影响。
+#
+#   DeepSeek：https://platform.deepseek.com/api_keys      → DEEPSEEK_API_KEY
+#   豆包（火山方舟）：https://console.volcengine.com/ark   → ARK_API_KEY
+#   智谱 GLM：https://open.bigmodel.cn/usercenter/apikeys  → ZHIPU_API_KEY
+#
+# 提示：豆包若在控制台要求「推理接入点」，把 model id 换成 ep-xxxxxxxx 即可。
+# ============================================================
+# AI Key 的三种给法（优先级从高到低）：
+#   1) 环境变量   DEEPSEEK_API_KEY / ARK_API_KEY / ZHIPU_API_KEY
+#   2) 用户目录   %USERPROFILE%\.fitlife\config\ai-key.yml 里的 fitlife.ai-key.*
+#   3) 上面 providers 里的 api-key 默认值（留空即为未配置）
+# 用第 2 种时按下面的格式写，不需要动 providers 列表：
+#   fitlife:
+#     ai-key:
+#       deepseek: sk-xxxx
+#       ark: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#       zhipu: xxxxxxxxxxxxxxxxxxxxxxxx
+ai:
+  # 默认模型：没有对应 Key 时后端会自动回落到第一个已配置的厂商
+  default-model: ${AI_DEFAULT_MODEL:deepseek-chat}
+  rate-limit: 30        # 每分钟最多请求数（对话 / 计划生成共用）
+
+  providers:
+    - id: deepseek
+      name: DeepSeek
+      api-url: https://api.deepseek.com/chat/completions
+      api-key: ${DEEPSEEK_API_KEY:${fitlife.ai-key.deepseek:}}
+      doc-url: https://platform.deepseek.com/api_keys
+      models:
+        - id: deepseek-chat
+          name: DeepSeek V3.2
+          tag: 免费额度
+          free: true
+          note: 通用对话与计划编排，速度快
+          max-tokens: 1600
+          temperature: 0.6
+        - id: deepseek-reasoner
+          name: DeepSeek R1
+          tag: 推理
+          free: true
+          note: 复杂问题逐步推理，回答更慢更长
+          max-tokens: 2000
+
+    - id: doubao
+      name: 豆包
+      api-url: https://ark.cn-beijing.volces.com/api/v3/chat/completions
+      api-key: ${ARK_API_KEY:${fitlife.ai-key.ark:}}
+      doc-url: https://console.volcengine.com/ark
+      models:
+        - id: doubao-seed-1-6-flash
+          name: 豆包 Seed 1.6 Flash
+          tag: 免费额度
+          free: true
+          note: 极速低价，日常问答够用
+          max-tokens: 1600
+          temperature: 0.6
+        - id: doubao-seed-1-6
+          name: 豆包 Seed 1.6
+          tag: 综合
+          free: true
+          note: 综合能力更强，支持更长上下文
+          max-tokens: 2000
+
+    - id: glm
+      name: 智谱 GLM
+      api-url: https://open.bigmodel.cn/api/paas/v4/chat/completions
+      # 原项目这里内置了一个真实 Key，打包分发会外泄，已改为只读配置
+      api-key: ${ZHIPU_API_KEY:${fitlife.ai-key.zhipu:}}
+      doc-url: https://open.bigmodel.cn/usercenter/apikeys
+      models:
+        - id: glm-4-flash
+          name: GLM-4-Flash
+          tag: 免费
+          free: true
+          note: 免费、响应快，需自备 Key
+          max-tokens: 1400
+          temperature: 0.7
+        - id: glm-4.6
+          name: GLM-4.6
+          tag: 长文本
+          free: false
+          note: 长文本与代码更强，按量计费
+          max-tokens: 2000
+
+logging:
+  # 桌面版看不到控制台时，日志落在 %USERPROFILE%\.fitlife\logs\fitlife.log
+  file:
+    name: ${FITLIFE_HOME:${user.home}/.fitlife}/logs/fitlife.log
+  level:
+    root: INFO
+    com.fitlife: ${LOG_LEVEL_FITLIFE:INFO}
+    org.springframework.security: WARN
