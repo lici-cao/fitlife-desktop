@@ -1,0 +1,35 @@
+# ---------- 依赖与构建产物 ----------
+node_modules/
+dist/
+dist-demo/
+build/
+FitLife-java/target/
+FitLife-java/src/main/resources/static/
+FitLife-web/node_modules/
+
+# ---------- IDE ----------
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# ---------- 日志与本地数据 ----------
+*.log
+logs/
+*.mv.db
+*.trace.db
+*.lock.db
+fitlife.lock
+port.txt
+
+# ---------- 系统文件 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 敏感配置（AI Key 只放本地，绝不入库） ----------
+.env.local
+.env.*.local
+ai-key.yml
+config/ai-key.yml
