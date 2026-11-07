@@ -197,7 +197,7 @@ jobs:
             --description "FitLife 健康管理 · AI 健身计划" `
             --input build\app `
             --main-jar $jar.Name `
-            --main-class $mainClass `
+            --main-class org.springframework.boot.loader.launch.JarLauncher `
             --runtime-image build\runtime `
             --java-options "-Dfile.encoding=UTF-8" `
             --java-options "-Djava.awt.headless=false" `
