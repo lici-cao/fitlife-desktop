@@ -126,7 +126,7 @@ cd FitLife-java && mvn spring-boot:run
 cd FitLife-web && npm install && npm run dev
 ```
 
-演示账号：`dandan / 123456`。
+演示账号：`demo / 123456`。
 
 ### 无需后端的界面预览（答辩演示用）
 
