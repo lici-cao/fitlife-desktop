@@ -222,13 +222,7 @@ public class AiService {
 
         String muscle = matchKeyword(text, "胸", "背", "肩", "手臂", "腿", "臀", "核心", "腹", "全身");
         String equipment = matchKeyword(text, "哑铃", "杠铃", "弹力带", "壶铃", "徒手", "器械");
-        String category = "有氧";
-        if (text.contains("有氧") || text.contains("跑步") || text.contains("燃脂")) category = "有氧";
-        else if (text.contains("核心") || text.contains("腹肌")) category = "核心";
-        else if (text.contains("拉伸") || text.contains("柔韧")) category = "柔韧";
-        else if (text.contains("HIIT") || text.contains("间歇")) category = "HIIT";
-        else if (text.contains("力量") || text.contains("增肌")) category = "力量";
-        else category = null;
+        final String category = resolveCategory(text);
 
         List<Exercise> picked = all.stream()
                 .filter(e -> muscle == null || muscle.equals(e.getMuscleGroup())
@@ -351,6 +345,15 @@ public class AiService {
         for (String k : keys) {
             if (text.contains(k)) return k;
         }
+        return null;
+    }
+
+    private String resolveCategory(String text) {
+        if (text.contains("有氧") || text.contains("跑步") || text.contains("燃脂")) return "有氧";
+        if (text.contains("核心") || text.contains("腹肌")) return "核心";
+        if (text.contains("拉伸") || text.contains("柔韧")) return "柔韧";
+        if (text.contains("HIIT") || text.contains("间歇")) return "HIIT";
+        if (text.contains("力量") || text.contains("增肌")) return "力量";
         return null;
     }
 
