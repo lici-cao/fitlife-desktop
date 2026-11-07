@@ -264,6 +264,10 @@ GeneratePlanRequest
 | GET | `/api/plan/list` / `/api/plan/{id}` | 历史计划 / 详情 |
 | DELETE | `/api/plan/{id}` | 删除计划 |
 | GET | `/api/chat/models` | **可用模型清单**（厂商 / 角标 / 是否已配置 Key） |
+| GET | `/api/ai/keys` | **Key 配置状态**（脱敏返回，登录后可见） |
+| POST | `/api/ai/keys` | **在页面里保存 Key**（加密落盘，立即生效） |
+| POST | `/api/ai/keys/verify` | **试调校验**，确认 Key 是否可用 |
+| DELETE | `/api/ai/keys/{providerId}` | 清除某厂商的 Key |
 | POST | `/api/chat/stream` | **流式对话**（SSE，逐字返回，可中止） |
 | POST | `/api/chat` | 非流式对话（接口调试 / 降级） |
 | POST | `/api/ai/chat` | 检索增强对话（兼容旧接口） |
@@ -296,11 +300,14 @@ ai:
       api-url: https://ark.cn-beijing.volces.com/api/v3/chat/completions
       api-key: ${ARK_API_KEY:}
       models: [doubao-seed-1-6-flash, doubao-seed-1-6]
-    - id: glm                                # 兜底，仓库内置可用 Key
+    - id: glm
       api-url: https://open.bigmodel.cn/api/paas/v4/chat/completions
-      api-key: ${ZHIPU_API_KEY:预置Key}
+      api-key: ${ZHIPU_API_KEY:${fitlife.ai-key.zhipu:}}
       models: [glm-4-flash, glm-4.6]
 ```
+
+> 仓库里**不再内置任何明文 Key**。桌面版首次启动会在 `%USERPROFILE%\.fitlife\config\ai-key.yml` 生成配置模板，
+> 也可以在 AI 对话页点「填写 / 更新 API Key」直接输入，加密保存、即时生效，无需重启。
 
 ### 怎么开模型
 
@@ -308,13 +315,17 @@ ai:
 | --- | --- | --- | --- |
 | DeepSeek | https://platform.deepseek.com/api_keys | `DEEPSEEK_API_KEY` | 注册赠送额度，V3.2 便宜、R1 推理强 |
 | 豆包（火山方舟） | https://console.volcengine.com/ark | `ARK_API_KEY` | 每个模型 50 万 token，Flash 极速 |
-| 智谱 GLM | https://open.bigmodel.cn/usercenter/apikeys | `ZHIPU_API_KEY` | `glm-4-flash` 免费，仓库已内置 |
+| 智谱 GLM | https://open.bigmodel.cn/usercenter/apikeys | `ZHIPU_API_KEY` | `glm-4-flash` 免费 |
 
-三种方式任选其一填 Key 即可，**不改一行 Java 代码**：
+填 Key 有三种方式，**都不改一行 Java 代码**，优先级从高到低：
 
-1. 环境变量（推荐，Windows 下 `setx DEEPSEEK_API_KEY sk-xxx` 后重开终端）；
-2. 直接改 `application.yml` 的 `api-key`；
-3. 豆包若提示需要「推理接入点」，把 `models[].id` 换成控制台里的 `ep-xxxxxxxx`。
+1. **AI 对话页填写（推荐）**：模型选择器底部 →「填写 / 更新 API Key」→ 粘贴 → 保存 → 点「测试」验证；
+2. 环境变量（`setx DEEPSEEK_API_KEY sk-xxx` 后重开程序），优先级最高；
+3. 手改 `%USERPROFILE%\.fitlife\config\ai-key.yml`（可写明文），改完重启生效。
+
+页面填写会把 Key 用 AES-256-GCM 加密后写入本地 `ai-key.yml`（首次改写前自动备份为 `ai-key.yml.bak`），
+接口只回传 `sk-****abcd` 之类的脱敏串，明文不会落到日志和前端。
+豆包若提示需要「推理接入点」，把 `models` 里的 id 换成控制台的 `ep-xxxxxxxx` 即可。
 
 未配置的厂商会在对话页模型列表里置灰，鼠标移上去能看到缺哪个环境变量。
 
@@ -326,7 +337,8 @@ ai:
 A：先看后端日志里 `动作库自动补齐` 的提示。若连不上 MySQL，请先启动 MySQL 服务并确认 `-DbPass` 与 `application.yml` 一致；能连上就会自动灌入 100 条。
 
 **Q：AI 提示「服务暂不可用」？**
-A：先看对话页模型选择器——被置灰的模型表示该厂商没填 Key。填任意一个 Key 即可恢复；即使不填，计划生成与运动搭配也会自动降级为规则模板，功能依然完整。默认内置的 `glm-4-flash` 可直接使用。
+A：先看对话页模型选择器——被置灰的模型表示该厂商没填 Key。点模型面板底部的「填写 / 更新 API Key」粘贴一个就能用；
+即使不填，计划生成与运动搭配也会自动降级为规则模板，功能依然完整。
 
 **Q：豆包报「model not found」？**
 A：火山方舟部分账号需要用「推理接入点」，把 `application.yml` 里 `doubao` 的 model id 换成控制台的 `ep-xxxxxxxx` 即可。

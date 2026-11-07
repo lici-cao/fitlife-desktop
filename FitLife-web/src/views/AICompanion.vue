@@ -4,8 +4,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../stores/user'
 import { useAppStore } from '../stores/app'
-import { aiApi, chatApi } from '../api/ai'
-import type { AiModelOption, ChatStreamEvent } from '../api/ai'
+import { aiApi, chatApi, aiKeyApi } from '../api/ai'
+import type { AiModelOption, AiKeyProviderStatus, ChatStreamEvent } from '../api/ai'
 import { planApi } from '../api'
 import { renderMarkdown } from '../utils/markdown'
 
@@ -218,6 +218,94 @@ const loadModels = async () => {
     models.value = FALLBACK_MODELS
   } finally {
     modelsLoaded.value = true
+  }
+}
+
+// ============================================================
+// 二·补充、API Key 页面填写（避免用户去改 jar 包里的配置文件）
+// ============================================================
+
+const keyDialogOpen = ref(false)
+const keyStatuses = ref<AiKeyProviderStatus[]>([])
+const keyInputs = ref<Record<string, string>>({})
+const keyBusy = ref('')
+const keyConfigFile = ref('')
+
+/** 用后端返回的模型清单刷新选择器（保持已有同步逻辑） */
+const applyModels = (list: AiModelOption[]) => {
+  if (!list?.length) return
+  models.value = list
+  const picked = models.value.find(m => m.id === currentModelId.value)
+  if (!picked || !picked.available) {
+    const first = models.value.find(m => m.available)
+    if (first) currentModelId.value = first.id
+  }
+}
+
+const loadKeyStatus = async () => {
+  try {
+    const res: any = await aiKeyApi.list()
+    const data = res.data?.data
+    keyStatuses.value = data?.providers || []
+    keyConfigFile.value = data?.configFile || ''
+    if (data?.models?.length) applyModels(data.models)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '读取 API Key 状态失败')
+  }
+}
+
+const openKeyDialog = async () => {
+  modelPanelOpen.value = false
+  keyInputs.value = {}
+  keyDialogOpen.value = true
+  await loadKeyStatus()
+}
+
+const saveKey = async (p: AiKeyProviderStatus) => {
+  const value = (keyInputs.value[p.providerId] || '').trim()
+  if (!value) {
+    ElMessage.warning('请先粘贴 API Key')
+    return
+  }
+  keyBusy.value = `${p.providerId}:save`
+  try {
+    const res: any = await aiKeyApi.save(p.providerId, value)
+    const data = res.data?.data
+    if (data?.providers) keyStatuses.value = data.providers
+    if (data?.models?.length) applyModels(data.models)
+    keyInputs.value[p.providerId] = ''
+    ElMessage.success(`${p.providerName} 的 Key 已保存，立即生效`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '保存失败')
+  } finally {
+    keyBusy.value = ''
+  }
+}
+
+const clearKey = async (p: AiKeyProviderStatus) => {
+  keyBusy.value = `${p.providerId}:clear`
+  try {
+    const res: any = await aiKeyApi.remove(p.providerId)
+    const data = res.data?.data
+    if (data?.providers) keyStatuses.value = data.providers
+    if (data?.models?.length) applyModels(data.models)
+    ElMessage.success(`已清除 ${p.providerName} 的 Key`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '清除失败')
+  } finally {
+    keyBusy.value = ''
+  }
+}
+
+const verifyKey = async (p: AiKeyProviderStatus) => {
+  keyBusy.value = `${p.providerId}:verify`
+  try {
+    await aiKeyApi.verify(p.providerId)
+    ElMessage.success(`${p.providerName} 的 Key 可用`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '验证失败，请检查 Key 是否正确')
+  } finally {
+    keyBusy.value = ''
   }
 }
 
@@ -995,6 +1083,7 @@ watch(activeId, () => scrollToBottom())
                 </div>
                 <div class="panel-foot">
                   模型由后端 <code>ai.providers</code> 配置，可在 <code>application.yml</code> 中增删。
+                  <button class="key-open-btn" @click="openKeyDialog">填写 / 更新 API Key</button>
                 </div>
               </div>
             </div>
@@ -1007,6 +1096,61 @@ watch(activeId, () => scrollToBottom())
         </div>
       </div>
     </section>
+
+    <!-- ==================== API Key 填写弹窗 ==================== -->
+    <el-dialog v-model="keyDialogOpen" title="模型 API Key" width="620px" append-to-body>
+      <div class="key-hint">
+        填好后立即生效，无需重启；Key 保存在本机
+        <code>{{ keyConfigFile || '用户目录/.fitlife/config/ai-key.yml' }}</code>，内容已加密。
+      </div>
+
+      <div v-if="!keyStatuses.length" class="key-empty">暂时读不到 Key 状态，请确认后端已启动。</div>
+
+      <div v-for="p in keyStatuses" :key="p.providerId" class="key-row">
+        <div class="key-row-head">
+          <span class="key-provider">{{ p.providerName }}</span>
+          <span v-if="p.configured" class="key-state ok">已配置 {{ p.masked }}</span>
+          <span v-else class="key-state off">未配置</span>
+        </div>
+        <div class="key-row-body">
+          <el-input
+            v-model="keyInputs[p.providerId]"
+            type="password"
+            show-password
+            clearable
+            :placeholder="p.configured ? '粘贴新的 Key 可覆盖当前配置' : '粘贴 API Key'"
+          />
+          <el-button type="primary" :loading="keyBusy === p.providerId + ':save'" @click="saveKey(p)">
+            保存
+          </el-button>
+          <el-button
+            :loading="keyBusy === p.providerId + ':verify'"
+            :disabled="!p.configured"
+            @click="verifyKey(p)"
+          >
+            测试
+          </el-button>
+          <el-button
+            :loading="keyBusy === p.providerId + ':clear'"
+            :disabled="!p.configured"
+            @click="clearKey(p)"
+          >
+            清除
+          </el-button>
+        </div>
+        <div class="key-row-tip">
+          <template v-if="p.docUrl">
+            申请地址：<a :href="p.docUrl" target="_blank" rel="noreferrer">{{ p.docUrl }}</a>
+          </template>
+          <span v-if="p.fromEnv" class="key-env">当前来自环境变量 {{ p.envHint }}，环境变量优先级最高。</span>
+          <span v-else>也可用环境变量 <code>{{ p.envHint }}</code> 指定。</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="keyDialogOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- ==================== 工具箱抽屉 ==================== -->
     <el-drawer v-model="toolsOpen" title="工具箱" size="720px" :with-header="true">
@@ -2220,5 +2364,109 @@ watch(activeId, () => scrollToBottom())
   .suggest-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------- API Key 填写 ---------- */
+.key-open-btn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #2f6fed;
+  background: rgba(47, 111, 237, 0.07);
+  border: 1px dashed rgba(47, 111, 237, 0.45);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.key-open-btn:hover {
+  background: rgba(47, 111, 237, 0.15);
+}
+
+.key-hint {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.7;
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+
+.key-hint code,
+.key-row-tip code {
+  background: #f4f5f8;
+  border-radius: 4px;
+  padding: 0 3px;
+  font-size: 11px;
+}
+
+.key-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.key-row {
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid #eceff3;
+  border-radius: 10px;
+}
+
+.key-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.key-provider {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.key-state {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.key-state.ok {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.1);
+}
+
+.key-state.off {
+  color: #9ca3af;
+  background: #f3f4f6;
+}
+
+.key-row-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-row-body :deep(.el-input) {
+  flex: 1;
+}
+
+.key-row-tip {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
+.key-row-tip a {
+  color: #2f6fed;
+}
+
+.key-env {
+  color: #b45309;
 }
 </style>

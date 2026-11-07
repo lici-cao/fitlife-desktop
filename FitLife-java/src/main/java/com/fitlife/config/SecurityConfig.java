@@ -35,6 +35,8 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // 保存/清除模型 API Key 是账号级敏感操作，必须登录后才能调用
+                        .requestMatchers("/api/ai/keys/**").authenticated()
                         .requestMatchers("/api/auth/**", "/api/health", "/api/ai/**").permitAll()
                         .requestMatchers("/api/chat/**").authenticated()
                         .requestMatchers("/api/data/**", "/api/plan/**").authenticated()

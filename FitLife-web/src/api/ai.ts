@@ -113,6 +113,41 @@ export const aiApi = {
   }
 }
 
+/** 某个厂商的 Key 配置状态（已脱敏） */
+export interface AiKeyProviderStatus {
+  providerId: string
+  providerName: string
+  configured: boolean
+  masked: string
+  docUrl?: string
+  envHint?: string
+  fromEnv?: boolean
+}
+
+/**
+ * 模型 API Key 页面化管理接口
+ * - list：各厂商 Key 状态（脱敏）+ 最新模型可用性
+ * - save / remove：保存或清除 Key，保存后立即生效，无需重启
+ * - verify：用已保存的 Key 试发一条请求
+ */
+export const aiKeyApi = {
+  list() {
+    return http.get('/ai/keys')
+  },
+
+  save(providerId: string, apiKey: string) {
+    return http.post('/ai/keys', { providerId, apiKey })
+  },
+
+  remove(providerId: string) {
+    return http.delete(`/ai/keys/${providerId}`)
+  },
+
+  verify(providerId: string) {
+    return http.post('/ai/keys/verify', { providerId })
+  }
+}
+
 /**
  * 工作台式对话接口
  * - models：可用模型清单（DeepSeek / 豆包 / 智谱）
