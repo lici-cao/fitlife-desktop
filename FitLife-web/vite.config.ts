@@ -10,16 +10,12 @@ export default defineConfig(({ mode }) => {
   const isDemo = env.VITE_DEMO === '1'
 
   return {
-    // 桌面版产物被内嵌到 Spring Boot 的 static 根目录，资源引用要相对根路径，
-    // 想部署到子路径（如 /fitlife/）时用 VITE_BASE 覆盖。
-    base: env.VITE_BASE || '/',
     plugins: [vue(), ...(isDemo ? [viteSingleFile()] : [])],
     build: {
       // 演示构建输出到独立目录，避免覆盖正式产物
       outDir: env.VITE_OUT_DIR || 'dist',
-      // 桌面版不生成 sourcemap，减小内嵌后的 jar 体积
+      // 桌面版内嵌进 jar，sourcemap 只会增大体积
       sourcemap: env.VITE_SOURCEMAP === '1',
-      chunkSizeWarningLimit: 1500,
       ...(isDemo ? { cssCodeSplit: false, assetsInlineLimit: 100_000_000 } : {})
     },
     server: {

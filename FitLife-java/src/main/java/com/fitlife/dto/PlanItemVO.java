@@ -23,6 +23,9 @@ public class PlanItemVO {
     private String reps;
     private Integer restSec;
     private Integer rpe;
+
+    /** 计划明细主键：前端打卡（POST /api/data/check-in）必须回传该值 */
+    private Long planDetailId;
     private Integer seq;
     private Double estCalories;
     private String description;

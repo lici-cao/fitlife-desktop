@@ -42,6 +42,12 @@
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
+        <!-- Spring Boot AOP：幂等切面与归属切面 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
         <!-- Spring Boot Validation -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -67,22 +73,17 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- H2：桌面版内置数据库（文件模式），用户无需安装 MySQL -->
+        <!-- MySQL JDBC -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
-
-        <!-- 如需继续连接 MySQL：把上面的 h2 依赖换成下面这段，并在
-             %USERPROFILE%\.fitlife\config\application.yml 覆盖 spring.datasource.* 即可。 -->
-        <!--
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
-        -->
 
         <!-- Lombok -->
         <dependency>
@@ -106,6 +107,14 @@
 
     <build>
         <plugins>
+            <!-- 保留方法参数名（Spring 6.1+ 不再默认保留 -parameters）：归属切面按参数名取 id 需要它 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

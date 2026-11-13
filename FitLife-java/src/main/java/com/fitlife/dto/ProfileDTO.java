@@ -23,4 +23,7 @@ public class ProfileDTO {
     private String equipments;
     /** 伤病史 / 禁忌部位，逗号分隔 */
     private String injuries;
+
+    /** P2：静息心率（次/分），用于 Karvonen 靶心率区间；35–110 之外按未填处理 */
+    private Integer hrRest;
 }

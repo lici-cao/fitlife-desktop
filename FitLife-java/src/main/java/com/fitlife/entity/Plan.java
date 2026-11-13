@@ -19,6 +19,10 @@ import java.time.LocalDateTime;
 @Builder
 public class Plan {
 
+    /** 计划状态：生效中 / 已归档（历史版本） */
+    public static final String STATUS_ACTIVE = "ACTIVE";
+    public static final String STATUS_ARCHIVED = "ARCHIVED";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -38,13 +42,7 @@ public class Plan {
     @Column(name = "session_minutes")
     private Integer sessionMinutes;
 
-    /**
-     * 计划摘要可能较长（大模型生成），这里用 @Lob 交给 Hibernate 按数据库方言
-     * 选择 CLOB / TEXT 类型。硬编码 columnDefinition = "TEXT" 在 H2 下会退化成
-     * CHARACTER VARYING 长度受限，改用 @Lob 后可同时兼容 H2 与 MySQL。
-     */
-    @Lob
-    @Column(name = "summary")
+    @Column(columnDefinition = "TEXT")
     private String summary;
 
     @Column(name = "weekly_cardio_min")
@@ -60,6 +58,41 @@ public class Plan {
     @Column(length = 20)
     private String status;
 
+    // ===== P2 版本链与校验证据 =====
+
+    /** 同用户内递增版本号（配合 uk(user_id, version)） */
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer version = 1;
+
+    /** 上一版本计划 id，回滚与对比锚点 */
+    @Column(name = "parent_id")
+    private Long parentId;
+
+    /** 本版变更说明：修复动作清单 / 降级原因 */
+    @Column(name = "change_note", length = 512)
+    private String changeNote;
+
+    /** 规则校验报告 JSON（ValidationReport 序列化） */
+    @Column(name = "validation_report", columnDefinition = "LONGTEXT")
+    private String validationReport;
+
+    /** 生成时注入的知识条目/规则快照 JSON，保证可溯源 */
+    @Column(name = "knowledge_snapshot", columnDefinition = "LONGTEXT")
+    private String knowledgeSnapshot;
+
+    /** LLM=大模型直接通过；LLM_REPAIRED=修复后通过；TEMPLATE=规则模板兜底 */
+    @Column(name = "source_link", length = 16)
+    private String sourceLink;
+
+    /** 本次生成端到端耗时（毫秒） */
+    @Column(name = "generation_ms")
+    private Integer generationMs;
+
+    /** 本次生成消耗 token 总数 */
+    @Column(name = "ai_tokens")
+    private Integer aiTokens;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -70,6 +103,9 @@ public class Plan {
         }
         if (status == null) {
             status = "ACTIVE";
+        }
+        if (version == null) {
+            version = 1;
         }
     }
 }

@@ -1,35 +1,31 @@
-# ---------- 依赖与构建产物 ----------
-node_modules/
-dist/
-dist-demo/
-build/
-FitLife-java/target/
-FitLife-java/src/main/resources/static/
-FitLife-web/node_modules/
+# ---- 本地环境与密钥（P1：密钥外置）----
+.env
+*.env.local
 
-# ---------- IDE ----------
+# ---- 后端构建产物 ----
+FitLife-java/target/
+*.class
+*.jar.original
+
+# ---- 前端依赖与产物 ----
+FitLife-web/node_modules/
+FitLife-web/dist/
+FitLife-web/dist-demo/
+FitLife-web/.vite/
+
+# ---- 运行日志 ----
+logs/
+*.log
+
+# ---- 打包产物 ----
+初改系统.zip
+
+# ---- IDE / 系统 ----
 .idea/
 .vscode/
 *.iml
-*.ipr
-*.iws
-
-# ---------- 日志与本地数据 ----------
-*.log
-logs/
-*.mv.db
-*.trace.db
-*.lock.db
-fitlife.lock
-port.txt
-
-# ---------- 系统文件 ----------
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# ---------- 敏感配置（AI Key 只放本地，绝不入库） ----------
-.env.local
-.env.*.local
-ai-key.yml
-config/ai-key.yml
+# ---- 旧版 jpackage 运行目录（含 JRE 与 jar，不入库）----
+FitLife/

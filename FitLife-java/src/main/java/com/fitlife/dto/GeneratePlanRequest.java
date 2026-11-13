@@ -28,4 +28,7 @@ public class GeneratePlanRequest {
 
     /** 是否强制重新生成（忽略缓存） */
     private Boolean force;
+
+    /** P2：指定大模型 id（如 deepseek-chat）；为空则用服务端默认模型 */
+    private String model;
 }

@@ -52,7 +52,7 @@ env:
   JAVA_VERSION: "17"
   NODE_VERSION: "22"
   APP_NAME: "FitLife"
-  APP_VERSION: ${{ inputs.app_version || '1.0.0' }}
+  APP_VERSION: ${{ inputs.app_version || '4.0.0' }}
 
 jobs:
   # ------------------------------------------------------------
@@ -200,6 +200,8 @@ jobs:
             --main-class org.springframework.boot.loader.launch.JarLauncher `
             --runtime-image build\runtime `
             --java-options "-Dfile.encoding=UTF-8" `
+            --java-options "-Dspring.profiles.active=desktop" `
+            --java-options "-Dfitlife.desktop=1" `
             --java-options "-Djava.awt.headless=false" `
             --java-options "-Xmx768m" `
             --win-console `
@@ -242,6 +244,8 @@ jobs:
             --main-class $mainClass `
             --runtime-image build\runtime `
             --java-options "-Dfile.encoding=UTF-8" `
+            --java-options "-Dspring.profiles.active=desktop" `
+            --java-options "-Dfitlife.desktop=1" `
             --java-options "-Xmx768m" `
             --win-menu `
             --win-shortcut `
@@ -308,13 +312,13 @@ jobs:
           @echo off
           setlocal
           cd /d "%~dp0"
-          start "" "%~dp0runtime\bin\javaw.exe" -Dfile.encoding=UTF-8 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
+          start "" "%~dp0runtime\bin\javaw.exe" -Dfile.encoding=UTF-8 -Dspring.profiles.active=desktop -Dfitlife.desktop=1 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
           BAT
           cat > pkg/FitLife/FitLife-debug.bat <<'BAT'
           @echo off
           setlocal
           cd /d "%~dp0"
-          "%~dp0runtime\bin\java.exe" -Dfile.encoding=UTF-8 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
+          "%~dp0runtime\bin\java.exe" -Dfile.encoding=UTF-8 -Dspring.profiles.active=desktop -Dfitlife.desktop=1 -Xmx768m -jar "%~dp0app\APP_JAR_PLACEHOLDER"
           pause
           BAT
           JAR_NAME=$(basename build/app/fitlife-backend-*.jar)

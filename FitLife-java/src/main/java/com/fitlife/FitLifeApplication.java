@@ -8,8 +8,13 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class FitLifeApplication {
 
     public static void main(String[] args) {
-        // 桌面版引导：数据目录 / 外置配置 / 单实例锁 / 端口探测，必须在容器启动前完成
-        DesktopBootstrap.prepare(args);
+        // 只有桌面发行版（jpackage 启动参数里带 -Dfitlife.desktop=1）才做本地目录/单实例/端口探测，
+        // 服务器部署走原来的 Spring Boot 启动流程，行为完全不变。
+        boolean desktopMode = "1".equals(String.valueOf(
+                System.getProperty("fitlife.desktop", System.getenv().getOrDefault("FITLIFE_DESKTOP", "0"))));
+        if (desktopMode) {
+            DesktopBootstrap.prepare(args);
+        }
         SpringApplication.run(FitLifeApplication.class, args);
     }
 }

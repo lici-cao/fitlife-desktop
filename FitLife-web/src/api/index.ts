@@ -90,6 +90,60 @@ export const exerciseApi = {
 }
 
 /**
+ * 今日训练卡与打卡（P4：执行闭环）
+ */
+export const todayPlanApi = {
+  /** 今日训练卡：动作、组次、目标心率区间、打卡状态 */
+  get() {
+    return http.get('/data/today-plan')
+  }
+}
+
+export const checkInApi = {
+  /** 打卡 / 跳过 / 部分完成（幂等，可带 Idempotency-Key） */
+  submit(data: {
+    planDetailId?: number
+    exerciseId?: string
+    exerciseName?: string
+    duration?: number
+    calories?: number
+    status?: 'DONE' | 'PARTIAL' | 'SKIPPED'
+    skippedReasons?: string
+    rpe?: number
+    pain?: boolean
+    date?: string
+    planId?: number
+  }) {
+    return http.post('/data/check-in', data)
+  },
+
+  /** 撤销某条打卡 */
+  undo(recordId: number) {
+    return http.delete(`/data/check-in/${recordId}`)
+  }
+}
+
+/**
+ * 统计与进阶建议（P4：服务端唯一口径）
+ */
+export const statsApi = {
+  /** 区间统计：依从率、训练量、热量收支、RPE 偏差、风险提示分级 */
+  summary(params?: { days?: number; startDate?: string; endDate?: string }) {
+    return http.get('/data/stats/summary', params)
+  },
+
+  /** 反馈与调整决策：HOLD / DELOAD / PROGRESS / SWAP / STOP */
+  advice(params?: { days?: number }) {
+    return http.get('/data/stats/advice', params)
+  },
+
+  /** 按建议生成下一版计划（≤10% 增幅，parent 指向上版） */
+  advance(params?: { days?: number }) {
+    return http.post('/data/stats/advance', params || {}, { timeout: 120000 })
+  }
+}
+
+/**
  * 动作库模块（知识库查询）
  */
 export const exerciseLibApi = {
@@ -137,8 +191,19 @@ export const planApi = {
     equipments?: string
     injuries?: string
     force?: boolean
+    model?: string
   }) {
     return http.post('/plan/generate', data || {}, { timeout: 120000 })
+  },
+
+  /** 版本回滚：把历史版本设为生效（P2） */
+  activate(id: number) {
+    return http.post(`/plan/${id}/activate`)
+  },
+
+  /** 对话式局部修订（P3）：自然语言改计划，返回结构化 Diff + 新版本 */
+  revise(data: { message: string; sessionKey?: string; model?: string; allowAction?: boolean }) {
+    return http.post('/plan/revise', data, { timeout: 60000 })
   },
 
   /** 删除计划 */

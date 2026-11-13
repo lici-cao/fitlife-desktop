@@ -2,6 +2,7 @@ package com.fitlife.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fitlife.dto.*;
+import com.fitlife.entity.ChatSession;
 import com.fitlife.util.BodyMetrics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +37,7 @@ public class ChatService {
     private final LlmGateway llmGateway;
     private final AiService aiService;
     private final AiPlanService aiPlanService;
+    private final ChatSessionService chatSessionService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** 流式任务线程池（守护线程，随应用退出） */
@@ -53,6 +55,9 @@ public class ChatService {
         SseEmitter emitter = new SseEmitter(300_000L);
         pool.submit(() -> {
             StringBuilder full = new StringBuilder();
+            // P3：服务端会话持久化（未登录不落库；失败仅告警，不阻断对话）
+            ChatSession session = userId == null ? null
+                    : chatSessionService.resolveSession(userId, req.getSessionId(), req.getMessage());
             try {
                 String modelId = req.getModel();
                 LlmGateway.Resolved target = null;
@@ -61,8 +66,10 @@ public class ChatService {
                 } catch (LlmGateway.LlmException e) {
                     // 没有可用 Key，先告知前端，再走兜底
                     send(emitter, event("error", "message", e.getMessage(), "fatal", false));
-                    send(emitter, event("fallback", "text", fallbackText(req), "reason", e.getMessage()));
+                    String fb = fallbackText(req);
+                    send(emitter, event("fallback", "text", fb, "reason", e.getMessage()));
                     send(emitter, event("done", "action", "CHAT"));
+                    persistTurn(session, req.getMessage(), fb, "CHAT_FALLBACK");
                     emitter.complete();
                     return;
                 }
@@ -93,6 +100,8 @@ public class ChatService {
                         send(emitter, event("match", "match", r.getMatch()));
                     }
                     send(emitter, event("done", "action", r.getAction() == null ? "CHAT" : r.getAction()));
+                    persistTurn(session, req.getMessage(), full.toString(),
+                            r.getAction() == null ? "CHAT" : r.getAction());
                     emitter.complete();
                     return;
                 }
@@ -116,6 +125,7 @@ public class ChatService {
                     send(emitter, event("exercises", "items", matched));
                 }
                 send(emitter, event("done", "action", "CHAT"));
+                persistTurn(session, req.getMessage(), full.toString(), "CHAT");
                 emitter.complete();
             } catch (Exception e) {
                 if (!"SSE_CLOSED".equals(e.getMessage())) {
@@ -123,6 +133,7 @@ public class ChatService {
                     send(emitter, event("error", "message", friendly(e), "fatal", true));
                     send(emitter, event("fallback", "text", fallbackText(req), "reason", friendly(e)));
                 }
+                persistTurn(session, req.getMessage(), full.toString(), "CHAT_ERROR");
                 try {
                     emitter.complete();
                 } catch (Exception ignore) {
@@ -139,6 +150,8 @@ public class ChatService {
 
     public Map<String, Object> chat(Long userId, ChatRequest req) {
         Map<String, Object> out = new LinkedHashMap<>();
+        ChatSession session = userId == null ? null
+                : chatSessionService.resolveSession(userId, req.getSessionId(), req.getMessage());
         LlmGateway.Resolved target;
         try {
             target = llmGateway.resolve(req.getModel());
@@ -147,6 +160,7 @@ public class ChatService {
             out.put("model", req.getModel());
             out.put("fallback", true);
             out.put("reason", e.getMessage());
+            persistTurn(session, req.getMessage(), (String) out.get("reply"), "CHAT_FALLBACK");
             return out;
         }
 
@@ -161,6 +175,8 @@ public class ChatService {
                 if (r.getMatch() != null) out.put("match", r.getMatch());
                 out.put("model", target.modelId());
                 out.put("provider", target.providerName());
+                persistTurn(session, req.getMessage(), r.getReply(),
+                        r.getAction() == null ? "CHAT" : r.getAction());
                 return out;
             }
         }
@@ -176,6 +192,7 @@ public class ChatService {
             out.put("model", target.modelId());
             out.put("provider", target.providerName());
             out.put("fallback", false);
+            persistTurn(session, req.getMessage(), reply, "CHAT");
             return out;
         } catch (Exception e) {
             log.warn("非流式对话失败: {}", e.getMessage());
@@ -184,6 +201,7 @@ public class ChatService {
             out.put("reason", friendly(e));
             out.put("model", target.modelId());
             out.put("provider", target.providerName());
+            persistTurn(session, req.getMessage(), (String) out.get("reply"), "CHAT_ERROR");
             return out;
         }
     }
@@ -191,6 +209,21 @@ public class ChatService {
     // ============================================================
     // 三、内部工具
     // ============================================================
+
+    /** P3：一轮对话留痕（user + assistant 两条；session 为 null 时直接跳过）。 */
+    private void persistTurn(ChatSession session, String userMsg, String assistantMsg, String action) {
+        if (session == null) {
+            return;
+        }
+        try {
+            chatSessionService.appendMessage(session, ChatSession.ROLE_USER, userMsg, action, null);
+            chatSessionService.appendMessage(session, ChatSession.ROLE_ASSISTANT,
+                    assistantMsg == null ? "" : assistantMsg, action, null);
+            chatSessionService.touchSession(session, null);
+        } catch (Exception e) {
+            log.debug("对话留痕失败（忽略）：{}", e.getMessage());
+        }
+    }
 
     private List<Map<String, String>> buildMessages(ChatRequest req, List<ExerciseDTO> candidates) {
         List<Map<String, String>> messages = new ArrayList<>();

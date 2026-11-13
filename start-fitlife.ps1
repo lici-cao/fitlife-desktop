@@ -1,13 +1,13 @@
 ﻿#requires -Version 5.1
 # ================================================================
-#  FitLife 一键启动脚本 v3（重新制作）
+#  FitLife 一键启动脚本 v4
 #
-#  解决的问题：
-#   1. 旧脚本用 mysql -e "source <Windows路径>" 导入，反斜杠被转义导致静默失败，
-#      数据库里始终没有 exercises 动作库 → 改用 stdin 管道导入，纯字节流、无路径转义
-#   2. 旧脚本每次 DROP DATABASE 重建，会清空用户数据 → 默认幂等迁移，只有 -ResetDb 才重建
-#   3. 旧 ps1 是 UTF-8 无 BOM，PowerShell 5.1 按 GBK 读取导致中文乱码 → 本文件带 UTF-8 BOM
-#   4. 导入后校验动作库条数；数据库凭据通过环境变量传给后端，前后端配置自动一致
+#  v4（P1 改造）新增：
+#   5. 首次运行自动生成 .env 并写入随机 JWT_SECRET；后端从环境变量读取密钥，
+#      仓库里不再有可用口令（v3 把 jwt.secret 与 GLM Key 明文写在 application.yml）
+#   6. 导入主 SQL 后自动执行 sql\migration\V1__p1_hardening.sql（唯一约束/索引/幂等表/审计表）、
+#      V2__p2_ai_pipeline.sql（知识库/规则/Prompt 模板/调用日志/计划版本列）与
+#      V3__p3_chat_revision.sql（会话表/消息表），三者均幂等
 #
 #  用法：
 #    双击 start-fitlife.bat
@@ -36,6 +36,11 @@ $BACKEND   = Join-Path $ROOT "FitLife-java"
 $FRONTEND  = Join-Path $ROOT "FitLife-web"
 $SQL_MAIN  = Join-Path $ROOT "fitlife-mysql.sql"
 $SQL_RESET = Join-Path $ROOT "sql\fitlife-reset.sql"
+$SQL_MIGRATION = Join-Path $ROOT "sql\migration\V1__p1_hardening.sql"
+$SQL_MIGRATION_P2 = Join-Path $ROOT "sql\migration\V2__p2_ai_pipeline.sql"
+$SQL_MIGRATION_P3 = Join-Path $ROOT "sql\migration\V3__p3_chat_revision.sql"
+$SQL_MIGRATION_P4 = Join-Path $ROOT "sql\migration\V4__p4_execution_loop.sql"
+$ENV_FILE  = Join-Path $ROOT ".env"
 
 function Write-Step { param([string]$t) Write-Host ""; Write-Host "==> $t" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$t) Write-Host "[OK]   $t" -ForegroundColor Green }
@@ -55,6 +60,71 @@ Write-Host "项目目录: $ROOT"
 # ------------------------------------------------------------
 if (-not (Test-Path $BACKEND))  { Write-Err "未找到后端目录: $BACKEND";  Stop-Script }
 if (-not (Test-Path $FRONTEND)) { Write-Err "未找到前端目录: $FRONTEND"; Stop-Script }
+
+# ------------------------------------------------------------
+# 0.5 环境变量：.env → 进程环境（JWT_SECRET / DB 凭据 / 模型 Key）
+#
+# 后端 application.yml 里 jwt.secret、数据库口令、模型 Key 全部改成
+# ${JWT_SECRET:} 这类占位，缺失时启动即失败（JwtService 会校验长度），
+# 因此这里必须先把 .env 读进进程环境，子进程 powershell 会继承。
+# ------------------------------------------------------------
+function Read-EnvFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    foreach ($line in (Get-Content -LiteralPath $Path -Encoding UTF8)) {
+        if ($null -eq $line) { continue }
+        $t = $line.Trim()
+        if ($t.Length -eq 0 -or $t.StartsWith("#")) { continue }
+        $i = $t.IndexOf("=")
+        if ($i -le 0) { continue }
+        $k = $t.Substring(0, $i).Trim()
+        $v = $t.Substring($i + 1).Trim()
+        if ($v.Length -ge 2 -and $v.StartsWith('"') -and $v.EndsWith('"')) {
+            $v = $v.Substring(1, $v.Length - 2)
+        }
+        if (-not [Environment]::GetEnvironmentVariable($k, "Process")) {
+            [Environment]::SetEnvironmentVariable($k, $v, "Process")
+        }
+    }
+}
+
+function New-RandomSecret {
+    $bytes = New-Object byte[] 48
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return [Convert]::ToBase64String($bytes)
+}
+
+Write-Step "加载环境变量"
+if (-not (Test-Path -LiteralPath $ENV_FILE)) {
+    $envLines = @(
+        "# FitLife 环境变量（首次运行自动生成，请勿提交到仓库）",
+        "# 修改后重启本脚本生效；也可以直接在系统里设置同名环境变量。",
+        "DB_USER=$DbUser",
+        "DB_PASS=$DbPass",
+        ("JWT_SECRET=" + (New-RandomSecret)),
+        "# 可选：填入自己的模型 Key，留空则对应厂商在界面里置灰",
+        "DEEPSEEK_API_KEY=",
+        "ARK_API_KEY=",
+        "ZHIPU_API_KEY="
+    )
+    Set-Content -LiteralPath $ENV_FILE -Value $envLines -Encoding UTF8
+    Write-Ok "已生成 .env（含随机 JWT_SECRET）"
+}
+Read-EnvFile $ENV_FILE
+
+# 命令行显式传入的凭据优先级最高；否则沿用 .env 里的值
+if ($PSBoundParameters.ContainsKey("DbUser")) { $env:DB_USER = $DbUser }
+elseif ($env:DB_USER) { $DbUser = $env:DB_USER }
+if ($PSBoundParameters.ContainsKey("DbPass")) { $env:DB_PASS = $DbPass }
+elseif ($env:DB_PASS) { $DbPass = $env:DB_PASS }
+
+if (-not $env:JWT_SECRET) {
+    $env:JWT_SECRET = New-RandomSecret
+    Add-Content -LiteralPath $ENV_FILE -Value ("JWT_SECRET=" + $env:JWT_SECRET) -Encoding UTF8
+    Write-Warn "原 .env 缺少 JWT_SECRET，已生成并追加"
+}
+Write-Ok ("JWT_SECRET 就绪（{0} 字节）" -f $env:JWT_SECRET.Length)
 
 # ------------------------------------------------------------
 # 1. 定位 JDK（返回 JAVA_HOME）
@@ -226,6 +296,57 @@ if (-not $SkipDb) {
                 Write-Ok "数据库迁移完成（幂等，未清空已有业务数据）"
             }
 
+            # P1 硬化迁移：唯一约束/索引/幂等表/审计表。与主 SQL 内容有重叠，
+            # 但单独执行一遍可以兜住「只导了旧 SQL、没跑主脚本」的机器。
+            if (Test-Path -LiteralPath $SQL_MIGRATION) {
+                $migText = Get-Content -LiteralPath $SQL_MIGRATION -Raw -Encoding UTF8
+                $migOut = $migText | & $MYSQL_EXE @userArgs 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "P1 迁移脚本返回非零状态，输出如下："
+                    $migOut.Split("`n") | Select-Object -First 12 | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkYellow }
+                } else {
+                    Write-Ok "P1 硬化迁移完成（唯一约束 / 索引 / 幂等表 / 审计表）"
+                }
+            } else {
+                Write-Warn "未找到 $SQL_MIGRATION，跳过 P1 硬化迁移"
+            }
+
+            # P2 AI 主链路迁移：知识条目/规则/模板/调用日志 + plans 版本列。
+            # 同样幂等，可重复执行。
+            if (Test-Path -LiteralPath $SQL_MIGRATION_P2) {
+                $mig2Text = Get-Content -LiteralPath $SQL_MIGRATION_P2 -Raw -Encoding UTF8
+                $mig2Out = $mig2Text | & $MYSQL_EXE @userArgs 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "P2 迁移脚本返回非零状态，输出如下："
+                    $mig2Out.Split("`n") | Select-Object -First 12 | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkYellow }
+                } else {
+                    Write-Ok "P2 主链路迁移完成（知识库 / 规则 / 模板 / 调用日志 / 计划版本）"
+                }
+            } else {
+                Write-Warn "未找到 $SQL_MIGRATION_P2，跳过 P2 迁移"
+            }
+
+            # P3 对话与修订迁移：会话表 / 消息表。幂等，可重复执行。
+            if (Test-Path -LiteralPath $SQL_MIGRATION_P3) {
+                $mig3Text = Get-Content -LiteralPath $SQL_MIGRATION_P3 -Raw -Encoding UTF8
+                $mig3Out = $mig3Text | & $MYSQL_EXE @userArgs 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "P3 迁移脚本返回非零状态，输出如下："
+                    $mig3Out.Split("`n") | Select-Object -First 12 | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkYellow }
+                } else {
+                    Write-Ok "P3 对话迁移完成（会话表 / 消息表）"
+                }
+            } else {
+                Write-Warn "未找到 $SQL_MIGRATION_P3，跳过 P3 迁移"
+            }
+            if (Test-Path -LiteralPath $SQL_MIGRATION_P4) {
+                $mig4Text = Get-Content -LiteralPath $SQL_MIGRATION_P4 -Raw -Encoding UTF8
+                $mig4Text | & $MYSQL_EXE @userArgs 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { Write-Warn "P4 迁移脚本返回非零（可重复执行，忽略）" } else { Write-Ok "P4 执行闭环迁移已应用" }
+            } else {
+                Write-Warn "未找到 $SQL_MIGRATION_P4，跳过 P4 迁移"
+            }
+
             # 校验动作库是否真的建好
             $count = (& $MYSQL_EXE @userArgs "--skip-column-names" "-e" "SELECT COUNT(*) FROM fitlife.exercises;" 2>$null | Select-Object -First 1)
             if ($count -and "$count".Trim() -match '^\d+$') {
@@ -304,8 +425,9 @@ Write-Host "============================================================" -Foreg
 Write-Host ("  前端页面  ->  http://localhost:{0}" -f $FrontendPort) -ForegroundColor White
 Write-Host ("  后端接口  ->  http://localhost:{0}/api/health" -f $BackendPort) -ForegroundColor White
 Write-Host ""
-Write-Host "  演示账号  ->  dandan / 123456" -ForegroundColor Gray
+Write-Host "  演示账号  ->  dandan / 123456（管理员，可访问 /api/admin）" -ForegroundColor Gray
 Write-Host "  新功能    ->  动作库（100 个动作）、训练计划、AI 搭子里的计划生成与运动搭配" -ForegroundColor Gray
+Write-Host "  P1 硬化   ->  唯一约束/索引、幂等键、RBAC 与归属校验、密钥外置、统一响应体" -ForegroundColor Gray
 Write-Host "  提示      ->  关闭弹出的两个 PowerShell 窗口即可停止服务" -ForegroundColor Gray
 Write-Host ""
 

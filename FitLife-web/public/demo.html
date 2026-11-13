@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FitLife · 前端演示预览</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #eef6ff 0%, #f6fffb 55%, #fff7ed 100%);
+    color: #1f2937; display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .box { width: 100%; max-width: 720px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .logo {
+    width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #409eff, #36cfc9); color: #fff; font-size: 22px; font-weight: 700;
+    box-shadow: 0 8px 22px rgba(64,158,255,.28);
+  }
+  .brand h1 { margin: 0; font-size: 24px; letter-spacing: .5px; }
+  .brand p { margin: 4px 0 0; font-size: 13px; color: #6b7280; }
+  .card {
+    background: rgba(255,255,255,.92); border: 1px solid rgba(255,255,255,.9);
+    border-radius: 18px; padding: 26px; box-shadow: 0 16px 44px rgba(31,41,55,.09);
+  }
+  .badge {
+    display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px;
+    background: #e8f5e9; color: #2e7d32; margin-bottom: 14px;
+  }
+  .card h2 { margin: 0 0 8px; font-size: 18px; }
+  .card > p { margin: 0 0 20px; font-size: 14px; line-height: 1.8; color: #4b5563; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  a.item {
+    display: block; text-decoration: none; color: #1f2937; background: #f8fafc;
+    border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 16px; transition: .18s;
+  }
+  a.item:hover { border-color: #409eff; background: #f0f7ff; transform: translateY(-2px); }
+  a.item b { display: block; font-size: 14px; margin-bottom: 4px; }
+  a.item span { font-size: 12px; color: #6b7280; line-height: 1.6; }
+  .foot { margin-top: 18px; font-size: 12px; color: #9ca3af; line-height: 1.7; }
+  .bar { height: 4px; border-radius: 4px; background: #e5e7eb; overflow: hidden; margin-top: 18px; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg,#409eff,#36cfc9); animation: go 1.3s linear forwards; }
+  @keyframes go { to { width: 100%; } }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="brand">
+    <div class="logo">F</div>
+    <div>
+      <h1>FitLife 健康管理平台</h1>
+      <p>前端页面演示 · 已载入 100 条真实动作库数据</p>
+    </div>
+  </div>
+  <div class="card">
+    <span class="badge">演示模式 · 无需启动 MySQL / 后端</span>
+    <h2>正在进入系统首页…</h2>
+    <p>这台环境没有启动 Spring Boot 与 MySQL，因此预览使用与后端完全一致的接口契约和动作库种子数据，界面和交互都是项目里真实运行的页面。左侧菜单可以直接切换功能。</p>
+    <div class="grid">
+      <a class="item" href="/dashboard"><b>📊 首页总览</b><span>热量缺口、体重趋势、今日数据</span></a>
+      <a class="item" href="/exercise-library"><b>🏋️ 动作库（新增）</b><span>100 个动作 · 筛选 / 搜索 / 动作要领 / 禁忌</span></a>
+      <a class="item" href="/plan"><b>📅 训练计划</b><span>一周计划、每天动作、历史计划、生成配置</span></a>
+      <a class="item" href="/ai-companion"><b>🤖 AI 健身搭子</b><span>对话生成计划 / 智能运动搭配 / 动作卡</span></a>
+    </div>
+    <div class="bar"><i></i></div>
+    <div class="foot">
+      提示：在「AI 健身搭子」里发送「帮我生成一周减脂计划」或「今天练胸怎么搭配」，可以看到计划卡与动作搭配结果；在「运动搭配」页点一次「智能搭配一组动作」即可看到完整动作表。<br>
+      正式运行时双击 start-fitlife.bat，本演示层不会生效。
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var K = {
+    demo: 'fitlife_demo',
+    token: 'fitlife_token',
+    userId: 'fitlife_userId',
+    loggedIn: 'fitlife_isLoggedIn',
+    profile: 'fitlife_profile',
+    records: 'fitlife_dailyRecords'
+  };
+  localStorage.setItem(K.demo, '1');
+  localStorage.setItem(K.token, 'demo-token');
+  localStorage.setItem(K.userId, '1');
+  localStorage.setItem(K.loggedIn, 'true');
+  localStorage.setItem(K.profile, JSON.stringify({
+    name: '丹丹', gender: 'female', age: 25, height: 165, weight: 60,
+    bodyFat: 25, goal: 'fat_loss', activityLevel: 'moderate',
+    experience: '初级', weeklyDays: 3, sessionMinutes: 45,
+    equipments: '徒手,哑铃', injuries: ''
+  }));
+  var records = [];
+  var intake = [1320, 1450, 1180, 1520, 1290, 1610, 1180];
+  var burn = [260, 180, 420, 150, 330, 210, 320];
+  for (var i = 6; i >= 0; i--) {
+    var d = new Date();
+    d.setDate(d.getDate() - i);
+    records.push({
+      date: d.toISOString().split('T')[0],
+      foodIntake: intake[6 - i],
+      exerciseBurn: burn[6 - i],
+      targetCalories: 1500,
+      weight: Number((60.8 - (6 - i) * 0.12).toFixed(1))
+    });
+  }
+  localStorage.setItem(K.records, JSON.stringify(records));
+  // 支持 ?goto=/plan 之类的直达链接，便于单独预览某个功能页
+  var goto = new URLSearchParams(location.search).get('goto');
+  var target = goto && /^\/[a-z-]+$/.test(goto) ? goto : '/dashboard';
+  setTimeout(function () { location.replace(target); }, 1300);
+})();
+</script>
+</body>
+</html>

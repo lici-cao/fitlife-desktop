@@ -11,4 +11,10 @@ import java.util.List;
 public interface WorkoutRecordRepository extends JpaRepository<WorkoutRecord, Long> {
     List<WorkoutRecord> findByUserIdAndDateBetween(Long userId, LocalDate startDate, LocalDate endDate);
     List<WorkoutRecord> findByUserId(Long userId);
+
+    // ===== P4：打卡关联查询 =====
+
+    List<WorkoutRecord> findByUserIdAndPlanDetailIdAndDate(Long userId, Long planDetailId, LocalDate date);
+
+    List<WorkoutRecord> findByUserIdAndDate(Long userId, LocalDate date);
 }

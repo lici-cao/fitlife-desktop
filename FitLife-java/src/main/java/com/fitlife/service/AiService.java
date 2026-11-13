@@ -2,6 +2,7 @@ package com.fitlife.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fitlife.common.BusinessException;
 import com.fitlife.config.AiModelProperties;
 import com.fitlife.dto.*;
 import com.fitlife.entity.Exercise;
@@ -34,7 +35,7 @@ public class AiService {
 
     public AiChatResponse chat(AiChatRequest request) {
         if (!checkRateLimit("chat")) {
-            throw new RuntimeException("请求过于频繁，请稍后再试");
+            throw new BusinessException(429, "请求过于频繁，请稍后再试");
         }
 
         try {
@@ -51,13 +52,13 @@ public class AiService {
             return chatResponse;
         } catch (Exception e) {
             log.error("AI chat error", e);
-            throw new RuntimeException("AI 服务暂时不可用: " + e.getMessage());
+            throw new BusinessException(503, "AI 服务暂时不可用，请稍后重试或切换模型");
         }
     }
 
     public PredictWeightResponse predictWeight(PredictWeightRequest request) {
         if (!checkRateLimit("predict")) {
-            throw new RuntimeException("请求过于频繁，请稍后再试");
+            throw new BusinessException(429, "请求过于频繁，请稍后再试");
         }
 
         try {
@@ -70,13 +71,13 @@ public class AiService {
             return predictResponse;
         } catch (Exception e) {
             log.error("AI predict weight error", e);
-            throw new RuntimeException("AI 服务暂时不可用: " + e.getMessage());
+            throw new BusinessException(503, "AI 服务暂时不可用，请稍后重试或切换模型");
         }
     }
 
     public DietSuggestionResponse dietSuggestion(DietSuggestionRequest request) {
         if (!checkRateLimit("diet")) {
-            throw new RuntimeException("请求过于频繁，请稍后再试");
+            throw new BusinessException(429, "请求过于频繁，请稍后再试");
         }
 
         try {
@@ -89,13 +90,13 @@ public class AiService {
             return dietResponse;
         } catch (Exception e) {
             log.error("AI diet suggestion error", e);
-            throw new RuntimeException("AI 服务暂时不可用: " + e.getMessage());
+            throw new BusinessException(503, "AI 服务暂时不可用，请稍后重试或切换模型");
         }
     }
 
     public ExerciseSuggestionResponse exerciseSuggestion(ExerciseSuggestionRequest request) {
         if (!checkRateLimit("exercise")) {
-            throw new RuntimeException("请求过于频繁，请稍后再试");
+            throw new BusinessException(429, "请求过于频繁，请稍后再试");
         }
 
         try {
@@ -108,13 +109,13 @@ public class AiService {
             return exerciseResponse;
         } catch (Exception e) {
             log.error("AI exercise suggestion error", e);
-            throw new RuntimeException("AI 服务暂时不可用: " + e.getMessage());
+            throw new BusinessException(503, "AI 服务暂时不可用，请稍后重试或切换模型");
         }
     }
 
     public DailySummaryResponse dailySummary(DailySummaryRequest request) {
         if (!checkRateLimit("summary")) {
-            throw new RuntimeException("请求过于频繁，请稍后再试");
+            throw new BusinessException(429, "请求过于频繁，请稍后再试");
         }
 
         try {
@@ -127,7 +128,7 @@ public class AiService {
             return summaryResponse;
         } catch (Exception e) {
             log.error("AI daily summary error", e);
-            throw new RuntimeException("AI 服务暂时不可用: " + e.getMessage());
+            throw new BusinessException(503, "AI 服务暂时不可用，请稍后重试或切换模型");
         }
     }
 
@@ -222,7 +223,12 @@ public class AiService {
 
         String muscle = matchKeyword(text, "胸", "背", "肩", "手臂", "腿", "臀", "核心", "腹", "全身");
         String equipment = matchKeyword(text, "哑铃", "杠铃", "弹力带", "壶铃", "徒手", "器械");
-        final String category = resolveCategory(text);
+        String category = (text.contains("有氧") || text.contains("跑步") || text.contains("燃脂")) ? "有氧"
+                : (text.contains("核心") || text.contains("腹肌")) ? "核心"
+                : (text.contains("拉伸") || text.contains("柔韧")) ? "柔韧"
+                : (text.contains("HIIT") || text.contains("间歇")) ? "HIIT"
+                : (text.contains("力量") || text.contains("增肌")) ? "力量"
+                : null;
 
         List<Exercise> picked = all.stream()
                 .filter(e -> muscle == null || muscle.equals(e.getMuscleGroup())
@@ -345,15 +351,6 @@ public class AiService {
         for (String k : keys) {
             if (text.contains(k)) return k;
         }
-        return null;
-    }
-
-    private String resolveCategory(String text) {
-        if (text.contains("有氧") || text.contains("跑步") || text.contains("燃脂")) return "有氧";
-        if (text.contains("核心") || text.contains("腹肌")) return "核心";
-        if (text.contains("拉伸") || text.contains("柔韧")) return "柔韧";
-        if (text.contains("HIIT") || text.contains("间歇")) return "HIIT";
-        if (text.contains("力量") || text.contains("增肌")) return "力量";
         return null;
     }
 

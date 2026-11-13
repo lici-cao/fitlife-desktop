@@ -1,0 +1,42 @@
+# ============================================================
+# FitLife 桌面版档案（jpackage 产物默认激活）
+#
+# 与服务器部署的区别只有三处：
+#   1) 数据库换成 H2 文件库，放在用户数据目录，不需要 MySQL
+#   2) JWT 密钥给一个本机默认值（单机自用；仍可用 JWT_SECRET 覆盖）
+#   3) 日志落到用户数据目录，并允许启动后自动打开浏览器
+# ============================================================
+spring:
+  datasource:
+    driver-class-name: org.h2.Driver
+    url: jdbc:h2:file:${FITLIFE_HOME:${user.home}/.fitlife}/data/fitlife;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;NON_KEYWORDS=USER,VALUE,KEY,DATE,DAY
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.H2Dialect
+
+server:
+  port: ${SERVER_PORT:8080}
+  address: 127.0.0.1
+
+jwt:
+  secret: ${JWT_SECRET:fitlife-desktop-v4-local-only-jwt-secret-change-me-2026}
+
+logging:
+  file:
+    name: ${FITLIFE_HOME:${user.home}/.fitlife}/logs/fitlife.log
+  level:
+    root: INFO
+    com.fitlife: ${LOG_LEVEL_FITLIFE:INFO}
+    org.springframework.security: ${LOG_LEVEL_SECURITY:WARN}
+
+fitlife:
+  desktop:
+    open-browser: true
+    demo-account: true

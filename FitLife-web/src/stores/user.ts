@@ -143,7 +143,13 @@ export const useUserStore = defineStore('user', () => {
     return Math.round(bmr.value * activityMultipliers[profile.value.activityLevel])
   })
 
+  // P4：服务端下发的目标热量优先（与 BodyMetrics 口径一致），没有时才用本地估算
+  const serverTargetCalories = ref<number | null>(null)
+
   const targetCalories = computed(() => {
+    if (serverTargetCalories.value && serverTargetCalories.value > 0) {
+      return Math.round(serverTargetCalories.value)
+    }
     const deficit = profile.value.goal === 'fat_loss' ? 500 
       : profile.value.goal === 'muscle_gain' ? 300 : 0
     return profile.value.goal === 'fat_loss' 
@@ -152,6 +158,13 @@ export const useUserStore = defineStore('user', () => {
         ? Math.round(tdee.value + deficit)
         : tdee.value
   })
+
+  /** 由 Dashboard 等服务端统计页回填，保证前后端同一口径 */
+  const syncTargetCalories = (value: number | null | undefined) => {
+    if (typeof value === 'number' && value > 0) {
+      serverTargetCalories.value = value
+    }
+  }
 
   const recommendedProtein = computed(() => {
     const leanMass = profile.value.weight * (1 - profile.value.bodyFat / 100)
@@ -253,6 +266,8 @@ export const useUserStore = defineStore('user', () => {
     initFromStorage,
     addFoodIntake,
     addExerciseBurn,
-    updateProfile
+    updateProfile,
+    syncTargetCalories,
+    serverTargetCalories
   }
 })

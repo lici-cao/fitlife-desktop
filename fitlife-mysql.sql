@@ -1,5 +1,5 @@
 -- ============================================================
--- FitLife 数据库初始化 / 升级脚本 v3（幂等，可反复执行且不清空业务数据）
+-- FitLife 数据库初始化 / 升级脚本 v4（幂等，可反复执行且不清空业务数据）
 --
 -- 变更要点：
 --   1. 不再删除重建数据库，改用 CREATE DATABASE / TABLE IF NOT EXISTS
@@ -7,9 +7,12 @@
 --   3. 新增 exercises 动作库（100 条已审核动作）与 plans / plan_details
 --   4. 种子数据用 INSERT IGNORE，重复执行不会产生重复记录
 --   5. 账号、饮食、运动、体重等业务数据完整保留
+--   6. P1：users 增加 role/status/last_login_at；daily_records 补 (user_id,date) 唯一约束；
+--      明细表补 (user_id,date) 索引；新增 idempotency_key、audit_log 两张表
 --
 -- 用法：mysql -u root -p --default-character-set=utf8mb4 < fitlife-mysql.sql
 -- 全量重建：先执行 sql/fitlife-reset.sql，再执行本脚本
+-- 增量升级：sql/migration/V1__p1_hardening.sql（只做 P1 那部分，可单独执行）
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS `fitlife` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -23,8 +26,12 @@ CREATE TABLE IF NOT EXISTS `users` (
   `created_at` DATETIME NULL,
   `password` VARCHAR(255) NOT NULL,
   `username` VARCHAR(255) NOT NULL,
+  `role` VARCHAR(20) NOT NULL DEFAULT 'USER' COMMENT 'USER / ADMIN',
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / DISABLED',
+  `last_login_at` DATETIME NULL,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_users_username` (`username`)
+  UNIQUE KEY `uk_users_username` (`username`),
+  KEY `idx_users_role` (`role`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------- 健康档案表 ----------------------------
@@ -51,27 +58,49 @@ CREATE TABLE IF NOT EXISTS `user_profiles` (
 -- 旧库平滑升级：仅当字段不存在时才添加，可重复执行
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_profiles' AND COLUMN_NAME = 'experience');
-SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `experience` VARCHAR(20) NULL', 'SELECT 1');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `experience` VARCHAR(20) NULL', 'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_profiles' AND COLUMN_NAME = 'weekly_days');
-SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `weekly_days` INT NULL', 'SELECT 1');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `weekly_days` INT NULL', 'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_profiles' AND COLUMN_NAME = 'session_minutes');
-SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `session_minutes` INT NULL', 'SELECT 1');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `session_minutes` INT NULL', 'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_profiles' AND COLUMN_NAME = 'equipments');
-SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `equipments` VARCHAR(120) NULL', 'SELECT 1');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `equipments` VARCHAR(120) NULL', 'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_profiles' AND COLUMN_NAME = 'injuries');
-SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `injuries` VARCHAR(120) NULL', 'SELECT 1');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `user_profiles` ADD COLUMN `injuries` VARCHAR(120) NULL', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+-- ---------------------------- users 表 P1 升级（角色 / 状态 / 最近登录） ----------------------------
+-- 旧库没有这三列，逐列判断后再加，可重复执行
+SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `users` ADD COLUMN `role` VARCHAR(20) NOT NULL DEFAULT ''USER'' COMMENT ''USER / ADMIN'' AFTER `password`', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'status');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `users` ADD COLUMN `status` VARCHAR(20) NOT NULL DEFAULT ''ACTIVE'' COMMENT ''ACTIVE / DISABLED'' AFTER `role`', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'last_login_at');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `users` ADD COLUMN `last_login_at` DATETIME NULL AFTER `created_at`', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND INDEX_NAME = 'idx_users_role');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `users` ADD INDEX `idx_users_role` (`role`)', 'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 -- ---------------------------- 业务记录表 ----------------------------
@@ -97,7 +126,8 @@ CREATE TABLE IF NOT EXISTS `daily_records` (
   `target_calories` DOUBLE NULL,
   `user_id` BIGINT NOT NULL,
   `weight` DOUBLE NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_daily_user_date` (`user_id`,`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `food_intakes` (
@@ -107,7 +137,8 @@ CREATE TABLE IF NOT EXISTS `food_intakes` (
   `date` DATE NOT NULL,
   `food_id` VARCHAR(255) NULL,
   `user_id` BIGINT NOT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_food_user_date` (`user_id`,`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `workout_records` (
@@ -118,8 +149,67 @@ CREATE TABLE IF NOT EXISTS `workout_records` (
   `exercise_id` VARCHAR(255) NOT NULL,
   `exercise_name` VARCHAR(255) NULL,
   `user_id` BIGINT NOT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_workout_user_date` (`user_id`,`date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------- 记录表 P1 升级（唯一约束与索引） ----------------------------
+-- 旧库 daily_records 没有 (user_id, date) 唯一约束：并发首插会生成两条当天记录，
+-- 之后回写只更新其中一条，统计就会漂。先去重（保留 id 最大的一条）再加唯一键。
+DELETE d1 FROM `daily_records` d1
+  JOIN `daily_records` d2
+    ON d1.`user_id` = d2.`user_id`
+   AND d1.`date`    = d2.`date`
+   AND d1.`id` < d2.`id`;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'daily_records' AND INDEX_NAME = 'uk_daily_user_date');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `daily_records` ADD UNIQUE KEY `uk_daily_user_date` (`user_id`,`date`)', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'food_intakes' AND INDEX_NAME = 'idx_food_user_date');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `food_intakes` ADD INDEX `idx_food_user_date` (`user_id`,`date`)', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+SET @c = (SELECT COUNT(*) FROM information_schema.STATISTICS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workout_records' AND INDEX_NAME = 'idx_workout_user_date');
+SET @ddl = IF(@c = 0, 'ALTER TABLE `workout_records` ADD INDEX `idx_workout_user_date` (`user_id`,`date`)', 'DO 0');
+PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
+
+-- 注意：plans 表在本段之后才创建，索引直接写在建表语句里（旧库由 sql/migration 补）
+
+-- ---------------------------- 幂等键表 ----------------------------
+CREATE TABLE IF NOT EXISTS `idempotency_key` (
+  `id`            BIGINT       NOT NULL AUTO_INCREMENT,
+  `idem_key`      VARCHAR(128) NOT NULL COMMENT '请求头 Idempotency-Key',
+  `user_id`       BIGINT       NOT NULL,
+  `endpoint`      VARCHAR(160) NOT NULL COMMENT '方法+路径，防止同 Key 跨接口复用',
+  `request_hash`  VARCHAR(64)  NOT NULL COMMENT '请求参数 SHA-256',
+  `status`        TINYINT      NOT NULL DEFAULT 0 COMMENT '0 处理中 / 1 已完成',
+  `response_body` LONGTEXT     NULL COMMENT '成功响应体，用于回放',
+  `created_at`    DATETIME     NOT NULL,
+  `updated_at`    DATETIME     NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_idem_user_key` (`user_id`,`idem_key`),
+  KEY `idx_idem_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='接口幂等键';
+
+-- ---------------------------- 审计日志表 ----------------------------
+CREATE TABLE IF NOT EXISTS `audit_log` (
+  `id`         BIGINT       NOT NULL AUTO_INCREMENT,
+  `user_id`    BIGINT       NULL,
+  `username`   VARCHAR(64)  NULL,
+  `action`     VARCHAR(64)  NOT NULL COMMENT 'PLAN_ACCESS_DENIED / USER_ROLE_CHANGE ...',
+  `target`     VARCHAR(32)  NULL COMMENT 'PLAN / CUSTOM_FOOD / USER',
+  `target_id`  BIGINT       NULL,
+  `detail`     VARCHAR(512) NULL,
+  `ip`         VARCHAR(64)  NULL,
+  `created_at` DATETIME     NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_user` (`user_id`),
+  KEY `idx_audit_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作审计';
 
 -- ---------------------------- 运动动作库 ----------------------------
 CREATE TABLE IF NOT EXISTS `exercises` (
@@ -158,7 +248,8 @@ CREATE TABLE IF NOT EXISTS `plans` (
   `created_at` DATETIME NULL,
   PRIMARY KEY (`id`),
   KEY `idx_plans_user` (`user_id`),
-  KEY `idx_plans_status` (`user_id`,`status`)
+  KEY `idx_plans_status` (`user_id`,`status`),
+  KEY `idx_plans_user_created` (`user_id`,`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='训练计划主表';
 
 CREATE TABLE IF NOT EXISTS `plan_details` (
@@ -181,8 +272,11 @@ CREATE TABLE IF NOT EXISTS `plan_details` (
 
 -- ---------------------------- 默认演示账号 ----------------------------
 -- 仅当账号不存在时插入；密码为 123456 的 BCrypt 值
-INSERT IGNORE INTO `users` (`id`,`created_at`,`password`,`username`) VALUES
-(1, NOW(), '$2a$10$.wbDFroaC3lbuIxpzkTDMumvt75BVdvuRGZCYNtZ87eDj4oYPdTgK', 'dandan');
+INSERT IGNORE INTO `users` (`id`,`created_at`,`password`,`username`,`role`,`status`) VALUES
+(1, NOW(), '$2a$10$.wbDFroaC3lbuIxpzkTDMumvt75BVdvuRGZCYNtZ87eDj4oYPdTgK', 'dandan', 'ADMIN', 'ACTIVE');
+
+-- 老库里 dandan 已经存在（INSERT IGNORE 不会改），单独把角色补成管理员，后台管理才有入口
+UPDATE `users` SET `role` = 'ADMIN' WHERE `username` = 'dandan';
 
 INSERT IGNORE INTO `user_profiles`
   (`id`,`activity_level`,`age`,`body_fat`,`gender`,`goal`,`height`,`name`,`user_id`,`weight`,
@@ -204,7 +298,7 @@ SET @idx_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exercises' AND INDEX_NAME = 'uk_ex_name');
 SET @ddl = IF(@idx_exists = 0,
               'ALTER TABLE `exercises` ADD UNIQUE KEY `uk_ex_name` (`name`)',
-              'SELECT 1');
+              'DO 0');
 PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;
 
 INSERT IGNORE INTO `exercises`

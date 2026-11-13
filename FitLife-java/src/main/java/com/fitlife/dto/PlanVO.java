@@ -31,4 +31,23 @@ public class PlanVO {
     private String status;
     private LocalDateTime createdAt;
     private List<PlanDayVO> days;
+
+    // ===== P2 版本链与校验证据 =====
+
+    /** 同用户内递增版本号 */
+    private Integer version;
+    /** 上一版计划 id */
+    private Long parentId;
+    /** 本版变更说明（修复动作清单 / 降级原因） */
+    private String changeNote;
+    /** LLM / LLM_REPAIRED / TEMPLATE */
+    private String sourceLink;
+    /** 规则校验报告（反序列化自 validation_report，解析失败为 null） */
+    private ValidationReport validationReport;
+    /** 风险提示（校验报告的便捷视图） */
+    private List<String> riskNotes;
+    /** 端到端生成耗时 ms */
+    private Integer generationMs;
+    /** 本次生成消耗 token 总数 */
+    private Integer aiTokens;
 }

@@ -1,6 +1,6 @@
 # FitLife-project
 
-基于AI的健身运动计划智能生成系统。
+面向健身人群的一站式健康管理 Web 系统（毕业设计）。
 
 ---
 
@@ -126,7 +126,7 @@ cd FitLife-java && mvn spring-boot:run
 cd FitLife-web && npm install && npm run dev
 ```
 
-演示账号：`demo / 123456`。
+演示账号：`dandan / 123456`。
 
 ### 无需后端的界面预览（答辩演示用）
 
@@ -264,10 +264,6 @@ GeneratePlanRequest
 | GET | `/api/plan/list` / `/api/plan/{id}` | 历史计划 / 详情 |
 | DELETE | `/api/plan/{id}` | 删除计划 |
 | GET | `/api/chat/models` | **可用模型清单**（厂商 / 角标 / 是否已配置 Key） |
-| GET | `/api/ai/keys` | **Key 配置状态**（脱敏返回，登录后可见） |
-| POST | `/api/ai/keys` | **在页面里保存 Key**（加密落盘，立即生效） |
-| POST | `/api/ai/keys/verify` | **试调校验**，确认 Key 是否可用 |
-| DELETE | `/api/ai/keys/{providerId}` | 清除某厂商的 Key |
 | POST | `/api/chat/stream` | **流式对话**（SSE，逐字返回，可中止） |
 | POST | `/api/chat` | 非流式对话（接口调试 / 降级） |
 | POST | `/api/ai/chat` | 检索增强对话（兼容旧接口） |
@@ -284,9 +280,14 @@ GeneratePlanRequest
 
 ```yaml
 spring:
+  profiles:
+    default: local                      # 本地开发默认值在 application-local.yml
   datasource:
     username: ${DB_USER:root}
-    password: ${DB_PASS:888}
+    password: ${DB_PASS:}               # P1：不再有内置口令，由 .env / 环境变量注入
+
+jwt:
+  secret: ${JWT_SECRET:}                # P1：必须 >=32 字节，缺失则启动即失败
 
 ai:
   default-model: ${AI_DEFAULT_MODEL:deepseek-chat}   # 没有该模型的 Key 时自动回落
@@ -302,12 +303,16 @@ ai:
       models: [doubao-seed-1-6-flash, doubao-seed-1-6]
     - id: glm
       api-url: https://open.bigmodel.cn/api/paas/v4/chat/completions
-      api-key: ${ZHIPU_API_KEY:${fitlife.ai-key.zhipu:}}
+      api-key: ${ZHIPU_API_KEY:}        # P1：内置 Key 已移除，需自行配置
       models: [glm-4-flash, glm-4.6]
+
+app:
+  cors:
+    allowed-origins: ${CORS_ORIGINS:*}  # 部署时收窄为前端域名
 ```
 
-> 仓库里**不再内置任何明文 Key**。桌面版首次启动会在 `%USERPROFILE%\.fitlife\config\ai-key.yml` 生成配置模板，
-> 也可以在 AI 对话页点「填写 / 更新 API Key」直接输入，加密保存、即时生效，无需重启。
+> P1 起密钥一律走 `.env`（模板见 `.env.example`）：`start-fitlife.ps1` 与
+> `scripts/p1-oneclick.ps1` 会自动生成随机 `JWT_SECRET` 并注入进程。
 
 ### 怎么开模型
 
@@ -315,19 +320,124 @@ ai:
 | --- | --- | --- | --- |
 | DeepSeek | https://platform.deepseek.com/api_keys | `DEEPSEEK_API_KEY` | 注册赠送额度，V3.2 便宜、R1 推理强 |
 | 豆包（火山方舟） | https://console.volcengine.com/ark | `ARK_API_KEY` | 每个模型 50 万 token，Flash 极速 |
-| 智谱 GLM | https://open.bigmodel.cn/usercenter/apikeys | `ZHIPU_API_KEY` | `glm-4-flash` 免费 |
+| 智谱 GLM | https://open.bigmodel.cn/usercenter/apikeys | `ZHIPU_API_KEY` | `glm-4-flash` 免费，仓库已内置 |
 
-填 Key 有三种方式，**都不改一行 Java 代码**，优先级从高到低：
+三种方式任选其一填 Key 即可，**不改一行 Java 代码**：
 
-1. **AI 对话页填写（推荐）**：模型选择器底部 →「填写 / 更新 API Key」→ 粘贴 → 保存 → 点「测试」验证；
-2. 环境变量（`setx DEEPSEEK_API_KEY sk-xxx` 后重开程序），优先级最高；
-3. 手改 `%USERPROFILE%\.fitlife\config\ai-key.yml`（可写明文），改完重启生效。
+1. `.env` 文件（推荐）：复制 `.env.example` 为 `.env`，填入 `DEEPSEEK_API_KEY=sk-xxx`，一键脚本会自动加载；
+2. 环境变量（Windows 下 `setx DEEPSEEK_API_KEY sk-xxx` 后重开终端）；
+3. 豆包若提示需要「推理接入点」，把 `models[].id` 换成控制台里的 `ep-xxxxxxxx`。
 
-页面填写会把 Key 用 AES-256-GCM 加密后写入本地 `ai-key.yml`（首次改写前自动备份为 `ai-key.yml.bak`），
-接口只回传 `sk-****abcd` 之类的脱敏串，明文不会落到日志和前端。
-豆包若提示需要「推理接入点」，把 `models` 里的 id 换成控制台的 `ep-xxxxxxxx` 即可。
+> P1 起不再支持把 Key 直接写进 `application.yml`——配置文件只保留 `${ENV:}` 占位符，
+> 避免「源码一公开，Key 一起公开」。
 
 未配置的厂商会在对话页模型列表里置灰，鼠标移上去能看到缺哪个环境变量。
+
+---
+
+## 八·五、P1 数据与安全硬化（本次改造）
+
+对应优化方案 P1 阶段，详见 [docs/P1-改造说明.md](docs/P1-改造说明.md)。
+
+| 项 | 一句话说明 | 关键文件 |
+| --- | --- | --- |
+| 唯一约束与索引 | 当日记录 `(user_id,date)` 唯一，明细表补联合索引 | `sql/migration/V1__p1_hardening.sql` |
+| 幂等键 | 写接口带 `Idempotency-Key`，重复提交回放首次响应 | `aspect/IdempotencyAspect.java` |
+| RBAC 与归属 | JWT 携带 `role`，默认全站需登录，`/api/admin/**` 仅管理员 | `config/SecurityConfig.java` |
+| 密钥外置 | `JWT_SECRET`/`DB_PASS`/`ZHIPU_API_KEY` 全部走环境变量 | `application.yml` + `application-local.yml` |
+| 统一响应体 | 失败一律 `{code,success,message,data}`，500 只回追踪号 | `controller/GlobalExceptionHandler.java` |
+
+新增接口：
+
+- `GET /api/admin/users?keyword=&page=&size=`、`GET /api/admin/audit-logs`
+- `PATCH /api/admin/users/{id}/status?status=ACTIVE|DISABLED`
+- `PATCH /api/admin/users/{id}/role?role=USER|ADMIN`
+
+新增表：`idempotency_key`、`audit_log`；`users` 增加 `role`/`status`/`last_login_at`。
+
+一键执行与验收：
+
+```powershell
+pwsh -File scripts\p1-oneclick.ps1     # 迁移 → 构建 → 启动 → 自检
+pwsh -File scripts\verify-p1.ps1       # 仅验收（服务已启动）
+```
+
+演示账号 `dandan / 123456` 已是管理员，可直接访问后台接口。
+
+---
+
+## 八·六、P2 AI 计划生成主链路（本次改造）
+
+对应优化方案 P2 阶段，详见 [docs/P2-改造说明.md](docs/P2-改造说明.md)。
+
+| 项 | 一句话说明 | 关键文件 |
+| --- | --- | --- |
+| 知识库与规则入库 | 24 条运动处方知识 + 6 条阈值规则入库，检索打分注入 Prompt 并快照落库 | `sql/migration/V2__p2_ai_pipeline.sql`、`service/KnowledgeRetriever.java` |
+| Prompt 模板版本化 | PLAN_GEN v1 入库，`{{metrics}}/{{constraints}}` 占位，DB 缺失自动回退内置 | `service/PromptTemplateService.java` |
+| 规则校验 + 最小修复 | 六类校验（靶心率/FITT/循序渐进/恢复/禁忌/容量），违例自动最小修复 ≤2 轮，报告随计划返回 | `service/PlanValidator.java`、`PlanRepairer.java` |
+| LLM 可靠性 | 重试 2 次 / 跨厂商转移 / 熔断 / 30s 超时 / token 计量落 `ai_call_log` | `service/LlmGateway.java`（completeGuarded，旧路径不动） |
+| 计划版本链 | `version/parent_id/change_note/validation_report/source_link`，可回滚任意历史版本 | `service/PlanOrchestrator.java`、`POST /api/plan/{id}/activate` |
+
+新增接口（均只读，管理员）：`/api/admin/knowledge-items`、`/knowledge-rules`、
+`/prompt-templates/{code}`、`/ai-calls`；用户侧新增 `POST /api/plan/{id}/activate`。
+前端计划页显示版本徽标 v{n}、来源（大模型/已修复/模板）、校验报告面板与回滚按钮。
+
+一键执行与验收：
+
+```powershell
+pwsh -File scripts\p2-oneclick.ps1     # 迁移 V1+V2 → 构建(含22项单测) → 启动 → P2自检 + P1回归
+pwsh -File scripts\verify-p2.ps1       # 仅验收（服务已启动）
+```
+
+无 API Key 时主链路自动走模板降级（`source_link=TEMPLATE`），校验报告与版本链照常生成。
+
+---
+
+## 八·七、P3 多轮对话与局部修订（本次改造）
+
+对应优化方案 P3 阶段，详见 [docs/P3-改造说明.md](docs/P3-改造说明.md)。
+
+| 项 | 一句话说明 | 关键文件 |
+| --- | --- | --- |
+| 会话/消息持久化 | chat_session + chat_message，对话与修订全留服务端，跨设备可查 | `sql/migration/V3__p3_chat_revision.sql`、`service/ChatSessionService.java` |
+| 上下文装配 | 档案 + 当前计划 + 校验结论 + 最近 6 轮 → 路由/生成共用 | `service/ChatSessionService.assembleContext` |
+| 意图路由 | LLM 结构化 JSON 优先，无 Key 退关键词规则（换/强度/去掉/为什么） | `service/IntentRouter.java` |
+| 局部修订 | 定位动作 → 候选替代 → 重算 → 校验 → v+1 落库 → 结构化 Diff | `service/PlanRevisionService.java`、`POST /api/plan/revise` |
+| 幂等与回滚 | revise 端点幂等回放（Idempotent-Replay: true）；任意版本可 activate 回滚 | P1 幂等切面 + P2 activate |
+
+AI 伙伴页对话同步落库；计划页新增「对话式微调」卡片（输入框 + 快捷指令 + Diff 展示）。
+无 API Key 时意图路由走关键词规则层，修订链路全部在服务端完成，验收不依赖大模型。
+
+一键执行与验收：
+
+```powershell
+pwsh -File scripts\p3-oneclick.ps1     # 迁移 V1+V2+V3 → 构建(含38项单测) → 启动 → P3自检 + P1/P2回归
+pwsh -File scripts\verify-p3.ps1       # 仅验收（服务已启动）
+```
+
+---
+
+## 八·八、P4 执行闭环与统计（本次改造）
+
+对应优化方案 P4 阶段，详见 [docs/P4-改造说明.md](docs/P4-改造说明.md)。
+
+| 项 | 一句话说明 | 关键文件 |
+| --- | --- | --- |
+| 打卡关联 | 打卡必须带 planDetailId，服务端校验明细归属并补齐动作名/计划日；分次完成按累加 | sql/migration/V4__p4_execution_loop.sql、service/CheckInService.java |
+| 聚合接口 | 打卡同事务内重算日报与依从率快照，统计由服务端唯一口径提供 | service/DailySummaryService.java、service/StatsService.java |
+| 前端改接 | Dashboard 图表改读 /api/data/stats/summary，目标热量对齐服务端 BodyMetrics | `views/Dashboard.vue`、	ypes/stats.ts |
+| 风险分级 | DANGER/WARN/INFO 三档；今日训练卡附 Karvonen 靶心率与禁忌提示 | StatsService.buildRisks、service/TodayPlanService.java |
+| 进阶闭环 | STOP>DELOAD>SWAP>PROGRESS>HOLD；仅高依从放行一键进阶，进阶走 P2 主链路 | service/ProgressService.java、POST /api/data/stats/advance |
+
+新增接口：GET /api/data/today-plan、POST|DELETE /api/data/check-in、GET /api/data/stats/summary、GET /api/data/stats/advice、POST /api/data/stats/advance。
+既有 /api/data/exercise-burn 仍为自由记录（不计入依从率），行为未变。
+
+一键执行与验证：
+
+```powershell
+pwsh -File scripts\p4-oneclick.ps1     # 迁移 V1~V4 → 构建(真跑56项单测) → 启动 → P4自检 + P1/P2/P3 回归
+pwsh -File scripts\verify-p4.ps1       # 单独验收，共 24 项
+```
 
 ---
 
@@ -337,8 +447,7 @@ ai:
 A：先看后端日志里 `动作库自动补齐` 的提示。若连不上 MySQL，请先启动 MySQL 服务并确认 `-DbPass` 与 `application.yml` 一致；能连上就会自动灌入 100 条。
 
 **Q：AI 提示「服务暂不可用」？**
-A：先看对话页模型选择器——被置灰的模型表示该厂商没填 Key。点模型面板底部的「填写 / 更新 API Key」粘贴一个就能用；
-即使不填，计划生成与运动搭配也会自动降级为规则模板，功能依然完整。
+A：先看对话页模型选择器——被置灰的模型表示该厂商没填 Key。填任意一个 Key 即可恢复；即使不填，计划生成与运动搭配也会自动降级为规则模板，功能依然完整。（P1 起不再内置 GLM Key，请在 `.env` 里配置 `ZHIPU_API_KEY`。）
 
 **Q：豆包报「model not found」？**
 A：火山方舟部分账号需要用「推理接入点」，把 `application.yml` 里 `doubao` 的 model id 换成控制台的 `ep-xxxxxxxx` 即可。

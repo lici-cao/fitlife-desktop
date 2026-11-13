@@ -130,6 +130,62 @@ public final class BodyMetrics {
     }
 
     // ------------------------------------------------------------------
+    // P2 心率区间（靶心率校验与画像补全）
+    //
+    // 不改动 Metrics record（老调用方零影响），心率相关一律走这里的静态方法。
+    // ------------------------------------------------------------------
+
+    /** 最大心率估算：Fox 公式 HRmax = 220 − 年龄 */
+    public static int hrMax(int age) {
+        int a = (age <= 0 || age > 120) ? 25 : age;
+        return 220 - a;
+    }
+
+    /** 静息心率：档案缺省按 70 bpm（普通成年人均值） */
+    public static int hrRestOrDefault(Integer hrRest) {
+        if (hrRest == null || hrRest < 35 || hrRest > 110) {
+            return 70;
+        }
+        return hrRest;
+    }
+
+    /** 心率储备 HRR = HRmax − HRrest */
+    public static int hrr(int age, Integer hrRest) {
+        return hrMax(age) - hrRestOrDefault(hrRest);
+    }
+
+    /**
+     * RPE（自觉用力程度 4–10）到 %HRR 的映射。
+     * 参照 ACSM「RPE 13≈40%、17≈85%」区间对应关系取整表；
+     * 校验器与画像补全共用这一张表，保证两处口径一致。
+     */
+    public static double rpeToHrrPct(int rpe) {
+        return switch (rpe) {
+            case 1, 2, 3 -> 0.30;
+            case 4 -> 0.40;
+            case 5 -> 0.50;
+            case 6 -> 0.60;
+            case 7 -> 0.70;
+            case 8 -> 0.80;
+            case 9 -> 0.88;
+            default -> 0.95;
+        };
+    }
+
+    /** Karvonen 靶心率 bpm：HRrest + pct × HRR（校验器把 RPE 映射成 pct 后换算区间边界） */
+    public static int targetBpm(int age, Integer hrRest, double pct) {
+        return (int) Math.round(hrRestOrDefault(hrRest) + pct * hrr(age, hrRest));
+    }
+
+    /** 画像补全用的一行心率文本（注入 Prompt 的 {{metrics}} 段） */
+    public static String hrDescribe(int age, Integer hrRest) {
+        int rest = hrRestOrDefault(hrRest);
+        int max = hrMax(age);
+        return "- 心率储备：HRmax≈" + max + " bpm（220−年龄），HRrest=" + rest
+                + " bpm，HRR=" + (max - rest) + " bpm；靶心率按 Karvonen 法 = HRrest + 强度% × HRR\n";
+    }
+
+    // ------------------------------------------------------------------
     // 内部工具
     // ------------------------------------------------------------------
 

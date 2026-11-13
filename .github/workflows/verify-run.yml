@@ -1,0 +1,197 @@
+name: verify-run
+
+# 云端完整跑一遍 FitLife 4.0：构建 → 以桌面(desktop)档案用 H2 启动 → 打通核心业务流程 → 输出报告
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - "gh-pages"
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "22"
+  APP_PORT: "18080"
+
+jobs:
+  verify:
+    name: Deploy, start and exercise core flows
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: FitLife-web/package-lock.json
+
+      - name: Build frontend (desktop mode)
+        working-directory: FitLife-web
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npm run build:desktop || npx vite build --mode desktop
+          test -f dist/index.html
+          echo "前端产物大小：$(du -sh dist | cut -f1)"
+
+      - name: Copy dist into backend static/
+        run: |
+          rm -rf FitLife-java/src/main/resources/static
+          mkdir -p FitLife-java/src/main/resources/static
+          cp -R FitLife-web/dist/. FitLife-java/src/main/resources/static/
+          ls FitLife-java/src/main/resources/static | head -n 10
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Maven package
+        working-directory: FitLife-java
+        run: |
+          mvn -B -ntp -DskipTests package
+          ls -lh target/*.jar
+
+      - name: Start application (desktop profile + H2)
+        run: |
+          mkdir -p artifacts run/home
+          export FITLIFE_HOME="$PWD/run/home"
+          export SERVER_PORT=${{ env.APP_PORT }}
+          JAR=$(ls FitLife-java/target/*.jar | head -n 1)
+          echo "启动 jar: $JAR"
+          nohup java -jar "$JAR" \
+            --spring.profiles.active=desktop \
+            --fitlife.desktop.open-browser=false \
+            --fitlife.desktop.demo-account=true > artifacts/app.log 2>&1 &
+          echo $! > artifacts/app.pid
+          echo "已后台启动，PID=$(cat artifacts/app.pid)"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:${APP_PORT}/api/health" -o /dev/null; then
+              echo "健康检查通过（第 ${i} 次，约 $((i*2))s）"
+              curl -s "http://127.0.0.1:${APP_PORT}/api/health"; echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "启动超时，日志尾部："
+          tail -n 120 artifacts/app.log
+          exit 1
+
+      - name: Exercise core flows
+        run: |
+          set -uo pipefail
+          BASE="http://127.0.0.1:${APP_PORT}"
+          R=artifacts/report.md
+          : > "$R"
+          echo "# FitLife 4.0 云端运行报告" >> "$R"
+          echo "" >> "$R"
+          echo "运行环境：ubuntu-latest / JDK ${JAVA_VERSION} / Node ${NODE_VERSION} / 桌面档案 + H2 文件库" >> "$R"
+          echo "" >> "$R"
+          pass=0; fail=0; LAST_BODY=""
+
+          say() { echo "$1"; echo "$1" >> "$R"; }
+
+          req() {
+            local name="$1" method="$2" path="$3" data="$4" token="${5:-}"
+            local hdr=(-H "Content-Type: application/json")
+            [ -n "$token" ] && hdr+=(-H "Authorization: Bearer $token")
+            LAST_BODY=$(mktemp)
+            local code
+            if [ "$data" = "-" ]; then
+              code=$(curl -s -o "$LAST_BODY" -w '%{http_code}' -X "$method" "${hdr[@]}" "$BASE$path")
+            else
+              code=$(curl -s -o "$LAST_BODY" -w '%{http_code}' -X "$method" "${hdr[@]}" -d "$data" "$BASE$path")
+            fi
+            local snippet
+            snippet=$(head -c 350 "$LAST_BODY" | tr '\n' ' ' | tr -d '\r')
+            if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+              pass=$((pass+1)); say "- [OK $code] **$name** — \`$method $path\` → $snippet"
+            else
+              fail=$((fail+1)); say "- [FAIL $code] **$name** — \`$method $path\` → $snippet"
+            fi
+          }
+
+          TODAY=$(date +%F)
+          say "## 1. 部署与启动"
+          req "健康检查" GET /api/health - 
+          say ""
+          say "## 2. 认证与账号"
+          req "注册测试账号" POST /api/auth/register '{"username":"e2e_user","password":"Test1234"}'
+          req "登录测试账号" POST /api/auth/login '{"username":"e2e_user","password":"Test1234"}'
+          TOKEN=$(jq -r '.data.token // empty' "$LAST_BODY" 2>/dev/null || true)
+          if [ -z "$TOKEN" ]; then
+            say "- 提示：注册账号登录未取到 token，改用桌面演示账号 dandan/123456"
+            req "登录演示账号" POST /api/auth/login '{"username":"dandan","password":"123456"}'
+            TOKEN=$(jq -r '.data.token // empty' "$LAST_BODY" 2>/dev/null || true)
+          fi
+          say "- token 获取结果：$([ -n "$TOKEN" ] && echo 已获取 || echo 未获取)"
+          say ""
+          say "## 3. 用户档案"
+          req "写入档案" PUT /api/data/profile '{"name":"E2E 用户","gender":"male","age":28,"height":175.0,"weight":72.0,"goal":"减脂","activityLevel":"moderate","experience":"beginner","weeklyDays":3,"sessionMinutes":45,"equipments":"哑铃,瑜伽垫","injuries":"","hrRest":68}' "$TOKEN"
+          req "读取档案" GET /api/data/profile - "$TOKEN"
+          say ""
+          say "## 4. 动作库"
+          req "动作库统计" GET /api/exercise/stats - "$TOKEN"
+          req "动作库列表" GET /api/exercise/list - "$TOKEN"
+          say ""
+          say "## 5. 计划编排（无 AI Key 时的降级路径）"
+          req "生成训练计划" POST /api/plan/generate '{"goal":"减脂","experience":"beginner","weeklyDays":3,"sessionMinutes":45,"equipments":"哑铃,瑜伽垫","injuries":"","force":true}' "$TOKEN"
+          req "当前计划" GET /api/plan/current - "$TOKEN"
+          req "计划列表" GET /api/plan/list - "$TOKEN"
+          req "对话式修订" POST /api/plan/chat '{"message":"把今天训练强度降低一点","allowAction":false}' "$TOKEN"
+          say ""
+          say "## 6. 今日训练与打卡"
+          req "今日训练卡" GET "/api/data/today-plan?date=$TODAY" - "$TOKEN"
+          req "打卡" POST /api/data/check-in "{\"exerciseId\":\"E001\",\"exerciseName\":\"深蹲\",\"duration\":30,\"calories\":120,\"status\":\"DONE\",\"rpe\":6,\"pain\":false,\"date\":\"$TODAY\"}" "$TOKEN"
+          req "数据同步" GET /api/data/sync - "$TOKEN"
+          say ""
+          say "## 7. 统计与进阶建议"
+          req "统计汇总" GET "/api/data/stats/summary?days=7" - "$TOKEN"
+          req "训练建议" GET /api/data/stats/advice - "$TOKEN"
+          req "进阶处理" POST /api/data/stats/advance '{"days":7}' "$TOKEN"
+          say ""
+          say "## 8. 权限与静态资源"
+          req "普通用户访问后台（应 403）" GET /api/admin/users - "$TOKEN"
+          INDEX_CODE=$(curl -s -o artifacts/index.html -w '%{http_code}' "$BASE/")
+          if [ "$INDEX_CODE" = "200" ] && grep -q 'id="app"' artifacts/index.html; then
+            pass=$((pass+1)); say "- [OK $INDEX_CODE] **内嵌前端首页** — \`GET /\` → 返回 SPA 入口（hash 路由）"
+          else
+            fail=$((fail+1)); say "- [FAIL $INDEX_CODE] **内嵌前端首页** — \`GET /\` → 未返回预期 SPA 入口"
+          fi
+          say ""
+          say "## 9. 运行期异常扫描"
+          ERR=$(grep -c -E "ERROR|Exception|Caused by" artifacts/app.log || true)
+          say "- 启动日志中 ERROR/异常行数：$ERR"
+          say ""
+          say "## 汇总"
+          say "- 通过步骤：$pass"
+          say "- 失败步骤：$fail"
+          say ""
+          say "## 关键日志片段"
+          say '```'
+          { grep -E "Started FitLifeApplication|Tomcat started|H2 console|jwt|演示账号|动作库|Hibernate: create|ERROR" artifacts/app.log | head -n 40; } >> "$R" 2>/dev/null || true
+          say '```'
+          echo "===== REPORT ====="
+          cat "$R"
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitlife-verify-report
+          path: |
+            artifacts/report.md
+            artifacts/app.log
+          if-no-files-found: warn
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f artifacts/app.pid ]; then kill "$(cat artifacts/app.pid)" 2>/dev/null || true; fi
