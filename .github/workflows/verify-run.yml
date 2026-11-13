@@ -4,8 +4,9 @@ name: verify-run
 on:
   workflow_dispatch:
   push:
-    branches-ignore:
-      - "gh-pages"
+    branches:
+      - "v4-desktop"
+      - "main"
 
 env:
   JAVA_VERSION: "17"
@@ -99,9 +100,10 @@ jobs:
           say() { echo "$1"; echo "$1" >> "$R"; }
 
           req() {
-            local name="$1" method="$2" path="$3" data="$4" token="${5:-}"
+            local name="$1" method="$2" path="$3" data="$4" token="${5:-}" extra="${6:-}"
             local hdr=(-H "Content-Type: application/json")
             [ -n "$token" ] && hdr+=(-H "Authorization: Bearer $token")
+            [ -n "$extra" ] && hdr+=(-H "$extra")
             LAST_BODY=$(mktemp)
             local code
             if [ "$data" = "-" ]; then
@@ -149,7 +151,38 @@ jobs:
           say ""
           say "## 6. 今日训练与打卡"
           req "今日训练卡" GET "/api/data/today-plan?date=$TODAY" - "$TOKEN"
-          req "打卡" POST /api/data/check-in "{\"exerciseId\":\"E001\",\"exerciseName\":\"深蹲\",\"duration\":30,\"calories\":120,\"status\":\"DONE\",\"rpe\":6,\"pain\":false,\"date\":\"$TODAY\"}" "$TOKEN"
+          PID=$(jq -r '.data.planId // empty' "$LAST_BODY" 2>/dev/null || true)
+          PDID=$(jq -r '.data.items[0].planDetailId // empty' "$LAST_BODY" 2>/dev/null || true)
+          CIDATE="$TODAY"; EXID=""; EXNAME=""
+          if [ -n "$PDID" ]; then
+            EXID=$(jq -r '.data.items[0].exerciseId // empty' "$LAST_BODY")
+            EXNAME=$(jq -r '.data.items[0].exerciseName // empty' "$LAST_BODY")
+          else
+            say "- 今日为休息日或计划无动作，向后寻找最近训练日"
+            for k in 1 2 3 4 5 6; do
+              D=$(date -d "+$k day" +%F)
+              req "训练卡($D)" GET "/api/data/today-plan?date=$D" - "$TOKEN"
+              PDID=$(jq -r '.data.items[0].planDetailId // empty' "$LAST_BODY" 2>/dev/null || true)
+              if [ -n "$PDID" ]; then
+                CIDATE="$D"
+                EXID=$(jq -r '.data.items[0].exerciseId // empty' "$LAST_BODY")
+                EXNAME=$(jq -r '.data.items[0].exerciseName // empty' "$LAST_BODY")
+                break
+              fi
+            done
+          fi
+          say "- 打卡目标：date=$CIDATE / planId=${PID:-空} / planDetailId=${PDID:-空} / 动作=${EXNAME:-空}"
+          if [ -n "$PDID" ] && [ -n "$EXID" ]; then
+            BODY="{\"planId\":$PID,\"planDetailId\":$PDID,\"exerciseId\":$EXID,\"exerciseName\":\"$EXNAME\",\"duration\":30,\"calories\":120,\"status\":\"DONE\",\"rpe\":6,\"pain\":false,\"date\":\"$CIDATE\"}"
+            KEY="e2e-checkin-$(date +%s)"
+            req "打卡（首次）" POST /api/data/check-in "$BODY" "$TOKEN" "Idempotency-Key: $KEY"
+            req "打卡（同 Key 重复提交→幂等）" POST /api/data/check-in "$BODY" "$TOKEN" "Idempotency-Key: $KEY"
+            req "打卡后训练卡" GET "/api/data/today-plan?date=$CIDATE" - "$TOKEN"
+            say "- 打卡后 doneItems=$(jq -r '.data.doneItems // 0' "$LAST_BODY" 2>/dev/null || echo 0) / adherenceRate=$(jq -r '.data.adherenceRate // 0' "$LAST_BODY" 2>/dev/null || echo 0)%"
+            req "打卡记录查询" GET "/api/data/daily-records?startDate=$CIDATE&endDate=$CIDATE" - "$TOKEN"
+          else
+            say "- 未找到可打卡的计划动作，跳过打卡验证"
+          fi
           req "数据同步" GET /api/data/sync - "$TOKEN"
           say ""
           say "## 7. 统计与进阶建议"
@@ -158,7 +191,18 @@ jobs:
           req "进阶处理" POST /api/data/stats/advance '{"days":7}' "$TOKEN"
           say ""
           say "## 8. 权限与静态资源"
-          req "普通用户访问后台（应 403）" GET /api/admin/users - "$TOKEN"
+          ADMIN_CODE=$(curl -s -o /tmp/admin.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users")
+          if [ "$ADMIN_CODE" = "403" ]; then
+            pass=$((pass+1)); say "- [OK 403] **权限拦截生效** — 普通用户访问 \`GET /api/admin/users\` → 被拒绝（预期行为）"
+          else
+            fail=$((fail+1)); say "- [FAIL $ADMIN_CODE] **权限拦截未生效** — 普通用户访问 \`/api/admin/users\` 返回 $ADMIN_CODE（预期 403）"
+          fi
+          UNAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/data/profile")
+          if [ "$UNAUTH_CODE" = "401" ] || [ "$UNAUTH_CODE" = "403" ]; then
+            pass=$((pass+1)); say "- [OK $UNAUTH_CODE] **未登录拦截生效** — 匿名访问 \`/api/data/profile\` → 被拒绝"
+          else
+            fail=$((fail+1)); say "- [FAIL $UNAUTH_CODE] **未登录拦截未生效** — 匿名访问返回 $UNAUTH_CODE"
+          fi
           INDEX_CODE=$(curl -s -o artifacts/index.html -w '%{http_code}' "$BASE/")
           if [ "$INDEX_CODE" = "200" ] && grep -q 'id="app"' artifacts/index.html; then
             pass=$((pass+1)); say "- [OK $INDEX_CODE] **内嵌前端首页** — \`GET /\` → 返回 SPA 入口（hash 路由）"
@@ -168,7 +212,11 @@ jobs:
           say ""
           say "## 9. 运行期异常扫描"
           ERR=$(grep -c -E "ERROR|Exception|Caused by" artifacts/app.log || true)
-          say "- 启动日志中 ERROR/异常行数：$ERR"
+          AIERR=$(grep -c "AI chat error" artifacts/app.log || true)
+          say "- 日志中 ERROR/异常行数：$ERR（其中 \"AI chat error\" ${AIERR} 条，属未配置 AI Key 的预期降级）"
+          say "- 非预期异常行："
+          grep -E "ERROR|Exception|Caused by" artifacts/app.log | grep -v "AI chat error" | head -n 10 | sed 's/^/    - /' >> "$R" || true
+          grep -E "ERROR|Exception|Caused by" artifacts/app.log | grep -v "AI chat error" | head -n 10 || echo "    （无）"
           say ""
           say "## 汇总"
           say "- 通过步骤：$pass"

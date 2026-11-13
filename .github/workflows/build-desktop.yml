@@ -20,6 +20,9 @@
 name: build-desktop
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       app_version:
