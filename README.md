@@ -126,7 +126,7 @@ cd FitLife-java && mvn spring-boot:run
 cd FitLife-web && npm install && npm run dev
 ```
 
-演示账号：`dandan / 123456`。
+演示账号：`dandan / 123456`（普通用户）、`admin / 123456`（管理员，登录后可见「内容审核」管理端）。
 
 ### 无需后端的界面预览（答辩演示用）
 
@@ -362,7 +362,7 @@ pwsh -File scripts\p1-oneclick.ps1     # 迁移 → 构建 → 启动 → 自检
 pwsh -File scripts\verify-p1.ps1       # 仅验收（服务已启动）
 ```
 
-演示账号 `dandan / 123456` 已是管理员，可直接访问后台接口。
+演示账号 `dandan / 123456` 在 SQL 部署场景下已是管理员，可直接访问后台接口；桌面版（H2 内嵌档）另有独立管理员账号 `admin / 123456`，登录后菜单出现「内容审核」。
 
 ---
 

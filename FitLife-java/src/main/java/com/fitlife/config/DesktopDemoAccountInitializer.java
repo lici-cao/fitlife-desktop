@@ -23,7 +23,11 @@ import java.time.LocalDateTime;
  *   desktop:
  *     demo-account: false   # 不想暴露演示账号就关掉
  * </pre>
- * 账号：dandan / 123456
+ * 账号：
+ * <ul>
+ *   <li>普通用户：dandan / 123456</li>
+ *   <li>管理员：admin / 123456 （可进入管理端，接口前缀 /api/admin）</li>
+ * </ul>
  */
 @Component
 public class DesktopDemoAccountInitializer implements ApplicationRunner {
@@ -32,6 +36,9 @@ public class DesktopDemoAccountInitializer implements ApplicationRunner {
 
     public static final String DEMO_USERNAME = "dandan";
     public static final String DEMO_PASSWORD = "123456";
+
+    public static final String DEMO_ADMIN_USERNAME = "admin";
+    public static final String DEMO_ADMIN_PASSWORD = "123456";
 
     private final UserRepository userRepository;
     private final UserProfileRepository userProfileRepository;
@@ -54,22 +61,41 @@ public class DesktopDemoAccountInitializer implements ApplicationRunner {
             log.info("已关闭桌面演示账号初始化（fitlife.desktop.demo-account=false）");
             return;
         }
+        ensureDemoAccount(DEMO_USERNAME, DEMO_PASSWORD, User.ROLE_USER, "演示用户");
+        ensureDemoAccount(DEMO_ADMIN_USERNAME, DEMO_ADMIN_PASSWORD, User.ROLE_ADMIN, "演示管理员");
+    }
+
+    /**
+     * 保证指定演示账号存在。
+     *
+     * <p>若账号已存在但角色不符（例如旧库里已有同名普通账号），只纠正角色，
+     * 不覆盖密码与个人资料，避免破坏用户已录入的数据。
+     */
+    private void ensureDemoAccount(String username, String rawPassword, String role, String profileName) {
         try {
-            if (userRepository.existsByUsername(DEMO_USERNAME)) {
-                log.info("桌面演示账号已存在：{}", DEMO_USERNAME);
+            var existing = userRepository.findByUsername(username);
+            if (existing.isPresent()) {
+                User user = existing.get();
+                if (!role.equals(user.getRole())) {
+                    user.setRole(role);
+                    userRepository.save(user);
+                    log.info("桌面演示账号角色已修正：{} -> {}", username, role);
+                } else {
+                    log.info("桌面演示账号已存在：{}（role={}）", username, role);
+                }
                 return;
             }
             User user = new User();
-            user.setUsername(DEMO_USERNAME);
-            user.setPassword(passwordEncoder.encode(DEMO_PASSWORD));
-            user.setRole(User.ROLE_USER);
+            user.setUsername(username);
+            user.setPassword(passwordEncoder.encode(rawPassword));
+            user.setRole(role);
             user.setStatus(User.STATUS_ACTIVE);
             user.setCreatedAt(LocalDateTime.now());
             userRepository.save(user);
 
             UserProfile profile = new UserProfile();
             profile.setUserId(user.getId());
-            profile.setName("演示用户");
+            profile.setName(profileName);
             profile.setGender("male");
             profile.setAge(28);
             profile.setHeight(175.0);
@@ -84,9 +110,9 @@ public class DesktopDemoAccountInitializer implements ApplicationRunner {
             profile.setHrRest(68);
             userProfileRepository.save(profile);
 
-            log.info("已创建桌面演示账号：{} / {}（请首次登录后修改密码）", DEMO_USERNAME, DEMO_PASSWORD);
+            log.info("已创建桌面演示账号：{} / {}（role={}，请首次登录后修改密码）", username, rawPassword, role);
         } catch (Exception e) {
-            log.warn("桌面演示账号初始化失败（不影响启动）：{}", e.toString());
+            log.warn("桌面演示账号初始化失败（{}，不影响启动）：{}", username, e.toString());
         }
     }
 }

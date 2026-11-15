@@ -256,6 +256,36 @@ jobs:
           req "进阶处理" POST /api/data/stats/advance '{"days":7}' "$TOKEN"
           say ""
           say "## 11. 权限与静态资源"
+          req "登录管理员演示账号" POST /api/auth/login '{"username":"admin","password":"123456"}'
+          ADMIN_TOKEN=$(jq -r '.data.token // empty' "$LAST_BODY" 2>/dev/null || true)
+          ADMIN_ROLE=$(jq -r '.data.user.role // empty' "$LAST_BODY" 2>/dev/null || true)
+          if [ "$ADMIN_ROLE" = "ADMIN" ] && [ -n "$ADMIN_TOKEN" ]; then
+            pass=$((pass+1)); say "- [OK ADMIN] **管理员演示账号可登录** — admin → role=ADMIN"
+          else
+            fail=$((fail+1)); say "- [FAIL ${ADMIN_ROLE:-未取到角色}] **管理员演示账号登录异常** — 返回角色 ${ADMIN_ROLE:-空}（预期 ADMIN）"
+          fi
+          if [ -n "$ADMIN_TOKEN" ]; then
+            ADMIN_ME_CODE=$(curl -s -o /tmp/admin_users.json -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE/api/admin/users")
+            if [ "$ADMIN_ME_CODE" = "200" ]; then
+              pass=$((pass+1)); say "- [OK 200] **管理员可读后台用户列表** — \`GET /api/admin/users\` 返回 200"
+            else
+              fail=$((fail+1)); say "- [FAIL $ADMIN_ME_CODE] **管理员读后台用户列表失败** — 返回 $ADMIN_ME_CODE（预期 200）"
+            fi
+            ADMIN_SUB_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE/api/admin/exercise-submissions")
+            if [ "$ADMIN_SUB_CODE" = "200" ]; then
+              pass=$((pass+1)); say "- [OK 200] **管理员可读投稿审核列表** — \`GET /api/admin/exercise-submissions\` 返回 200"
+            else
+              fail=$((fail+1)); say "- [FAIL $ADMIN_SUB_CODE] **管理员读投稿列表失败** — 返回 $ADMIN_SUB_CODE（预期 200）"
+            fi
+            ADMIN_STAT_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE/api/admin/content-stats")
+            if [ "$ADMIN_STAT_CODE" = "200" ]; then
+              pass=$((pass+1)); say "- [OK 200] **管理员可读内容统计** — \`GET /api/admin/content-stats\` 返回 200"
+            else
+              fail=$((fail+1)); say "- [FAIL $ADMIN_STAT_CODE] **管理员读内容统计失败** — 返回 $ADMIN_STAT_CODE（预期 200）"
+            fi
+          else
+            fail=$((fail+1)); say "- [SKIP] **管理员接口正向断言跳过** — 未取到管理员 token"
+          fi
           ADMIN_CODE=$(curl -s -o /tmp/admin.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users")
           if [ "$ADMIN_CODE" = "403" ]; then
             pass=$((pass+1)); say "- [OK 403] **权限拦截生效** — 普通用户访问 \`GET /api/admin/users\` → 被拒绝（预期行为）"
