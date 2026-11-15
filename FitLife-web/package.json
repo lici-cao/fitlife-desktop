@@ -7,9 +7,9 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "build:demo": "vue-tsc -b && vite build --mode demo",
+    "preview": "vite preview",
     "build:desktop": "vue-tsc -b && vite build --mode desktop",
-    "build:desktop:fast": "vite build --mode desktop",
-    "preview": "vite preview"
+    "build:desktop:fast": "vite build --mode desktop"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

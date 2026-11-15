@@ -8,6 +8,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * AI 能力接口。
+ *
+ * <p>P1 改动：移除每个方法里的 {@code try/catch RuntimeException -> badRequest(e.getMessage())}。
+ * 这类写法会把上游厂商的报错原文（含 URL、Key 片段）直接回给浏览器；现在统一由
+ * {@code GlobalExceptionHandler} 按异常类型映射状态码与安全文案（429 / 503 / 500）。
+ */
 @RestController
 @RequestMapping("/api/ai")
 @RequiredArgsConstructor
@@ -18,67 +25,34 @@ public class AiController {
 
     @PostMapping("/chat")
     public ResponseEntity<ApiResponse> chat(@Valid @RequestBody AiChatRequest request) {
-        try {
-            AiChatResponse response = aiService.chat(request);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(aiService.chat(request)));
     }
 
     @PostMapping("/predict-weight")
     public ResponseEntity<ApiResponse> predictWeight(@Valid @RequestBody PredictWeightRequest request) {
-        try {
-            PredictWeightResponse response = aiService.predictWeight(request);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(aiService.predictWeight(request)));
     }
 
     @PostMapping("/diet-suggestion")
     public ResponseEntity<ApiResponse> dietSuggestion(@Valid @RequestBody DietSuggestionRequest request) {
-        try {
-            DietSuggestionResponse response = aiService.dietSuggestion(request);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(aiService.dietSuggestion(request)));
     }
 
     @PostMapping("/exercise-suggestion")
     public ResponseEntity<ApiResponse> exerciseSuggestion(@Valid @RequestBody ExerciseSuggestionRequest request) {
-        try {
-            ExerciseSuggestionResponse response = aiService.exerciseSuggestion(request);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(aiService.exerciseSuggestion(request)));
     }
 
     @PostMapping("/daily-summary")
     public ResponseEntity<ApiResponse> dailySummary(@Valid @RequestBody DailySummaryRequest request) {
-        try {
-            DailySummaryResponse response = aiService.dailySummary(request);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        return ResponseEntity.ok(ApiResponse.success(aiService.dailySummary(request)));
     }
 
+    /** 遗留调试端点：直连智谱。保留但同样受统一鉴权与异常处理约束。 */
     @PostMapping("/sendZp")
     public ResponseEntity<ApiResponse> sendZp(@Valid @RequestBody AiChatRequest request) {
-        try {
-            if (request.getMessage() == null || request.getMessage().trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(ApiResponse.error("消息不能为空"));
-            }
-            String reply = aiService.chatZp(request.getMessage());
-            AiChatResponse response = new AiChatResponse();
-            response.setReply(reply);
-            return ResponseEntity.ok(ApiResponse.success(response));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(e.getMessage()));
-        }
+        AiChatResponse response = new AiChatResponse();
+        response.setReply(aiService.chatZp(request.getMessage()));
+        return ResponseEntity.ok(ApiResponse.success(response));
     }
-
 }

@@ -1,6 +1,6 @@
 /**
  * HTTP 请求工具类
- * 基于 Axios 封装，支持拦截器、超时处理、统一错误处理
+ * 基于 Axios 封装，支持拦截器、超时处理、统一错误处理、幂等键
  */
 
 import axios, { AxiosError } from 'axios'
@@ -13,9 +13,29 @@ const BASE_URL = import.meta.env.VITE_APP_API_URL || '/api'
 /** 供 fetch（SSE 流式对话）复用的接口前缀 */
 export const API_BASE_URL = BASE_URL
 
-// 桌面版默认 hash 路由，登录跳转必须带 #，否则会命中后端 404
-const ROUTER_HASH_MODE = import.meta.env.VITE_ROUTER_MODE !== 'history'
-const LOGIN_PATH = ROUTER_HASH_MODE ? '/#/login' : '/login'
+/** 写操作默认携带的幂等键请求头，与后端 IdempotencyAspect 约定一致 */
+export const IDEMPOTENCY_HEADER = 'Idempotency-Key'
+
+/**
+ * 生成幂等键。
+ *
+ * 同一份业务意图必须复用同一个 Key 才叫「幂等」：如果调用方自己重试（例如网络抖动后
+ * 重新发一次生成计划），应把第一次生成的 Key 存下来传给重试请求，而不是重新调这个函数。
+ */
+export function newIdempotencyKey(): string {
+  const webCrypto = globalThis.crypto
+  if (webCrypto && typeof webCrypto.randomUUID === 'function') {
+    return webCrypto.randomUUID()
+  }
+  return `idem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+/** 不参与自动幂等的路径：登录/注册本身不该被「回放」 */
+const AUTH_PATH = '/auth/'
+
+function isAuthRequest(url?: string): boolean {
+  return !!url && url.includes(AUTH_PATH)
+}
 
 // 创建 Axios 实例
 const axiosInstance = axios.create({
@@ -28,43 +48,58 @@ const axiosInstance = axios.create({
 
 /**
  * 请求拦截器
- * 在发送请求之前做些什么
+ * 1. 注入 Bearer Token；
+ * 2. 为写操作自动生成幂等键（可用 skipIdempotency: true 关闭）；
+ * 3. 不再打印完整请求对象——原实现会把 Authorization 头打进控制台。
  */
 axiosInstance.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // 添加 Token
+    config.headers = config.headers || ({} as AxiosRequestHeaders)
+
     const token = localStorage.getItem('fitlife_token')
     if (token) {
-      config.headers = config.headers || {} as AxiosRequestHeaders
       config.headers['Authorization'] = `Bearer ${token}`
     }
-    console.debug('[HTTP] Request:', config)
+
+    const method = (config.method || 'get').toLowerCase()
+    const isWrite = method === 'post' || method === 'put' || method === 'patch' || method === 'delete'
+    const skip = (config as any).skipIdempotency === true || isAuthRequest(config.url)
+    if (isWrite && !skip && !config.headers[IDEMPOTENCY_HEADER]) {
+      config.headers[IDEMPOTENCY_HEADER] = newIdempotencyKey()
+    }
+
     return config
   },
   (error: AxiosError) => {
-    console.error('[HTTP] Request Error:', error)
     return Promise.reject(error)
   }
 )
 
 /**
  * 响应拦截器
- * 对响应数据做些什么
+ * 401 才清登录态；403 是「登录了但没权限」，清 token 反而会把人踢回登录页。
+ * 登录/注册接口的 401 也不跳转，否则输错密码会整页刷新、提示文案丢失。
  */
 axiosInstance.interceptors.response.use(
   (response: AxiosResponse) => {
-    console.debug('[HTTP] Response:', response)
     return response
   },
   (error: AxiosError) => {
-    console.error('[HTTP] Response Error:', error)
+    const status = error.response?.status
+    const url = error.config?.url || ''
 
-    // Token过期处理
-    if (error.response?.status === 401 || error.response?.status === 403) {
+    if (status === 401) {
+      if (isAuthRequest(url)) {
+        return Promise.reject(error)
+      }
       localStorage.removeItem('fitlife_token')
       localStorage.removeItem('fitlife_userId')
-      window.location.href = LOGIN_PATH
-      return Promise.reject(new Error('Token已过期，请重新登录'))
+      window.location.href = '/login'
+      return Promise.reject(new Error('登录状态已失效，请重新登录'))
+    }
+
+    if (status === 403) {
+      return Promise.reject(error)
     }
 
     return Promise.reject(error)
@@ -102,7 +137,7 @@ function get<T = any>(
  * POST 请求
  * @param url - 请求地址
  * @param data - 请求体数据
- * @param options - 其他选项
+ * @param options - 其他选项（幂等键默认自动生成）
  * @returns {Promise}
  */
 function post<T = any>(

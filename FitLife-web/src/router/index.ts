@@ -63,22 +63,24 @@ const routes: RouteRecordRaw[] = [
     name: 'AICompanion',
     component: () => import('../views/AICompanion.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    // P5：内容审核（仅管理员；后端 /api/admin/** 由 hasRole('ADMIN') 兜底）
+    path: '/admin/review',
+    name: 'AdminReview',
+    component: () => import('../views/AdminReview.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
 
-// 桌面版把前端产物内嵌进后端 static 目录，由 Spring Boot 直接托管静态资源。
-// 这种情况下没有服务端 rewrite，history 模式一旦刷新就会 404，因此默认走 hash 模式：
-//   http://127.0.0.1:8080/#/dashboard
-// 如果你的部署环境已经配好 frontend fallback（例如 Nginx try_files），
-// 可以设置 VITE_ROUTER_MODE=history 恢复 history 模式。
-const useHashMode = import.meta.env.VITE_ROUTER_MODE !== 'history'
-
+// 演示构建跑在纯静态托管上（没有服务端 rewrite），用 hash 路由避免刷新 404
 const router = createRouter({
-  history: useHashMode ? createWebHashHistory() : createWebHistory(),
+  history:
+    import.meta.env.VITE_ROUTER_MODE === 'hash'
+      ? createWebHashHistory()
+      : createWebHistory(),
   routes
 })
-
-export { useHashMode }
 
 // 路由守卫
 router.beforeEach((to, _from, next) => {
@@ -87,6 +89,8 @@ router.beforeEach((to, _from, next) => {
 
   if (requiresAuth && !token) {
     next('/login')
+  } else if (to.meta.requiresAdmin && localStorage.getItem('fitlife_role') !== 'ADMIN') {
+    next('/dashboard')
   } else if ((to.path === '/login' || to.path === '/register') && token) {
     next('/dashboard')
   } else {

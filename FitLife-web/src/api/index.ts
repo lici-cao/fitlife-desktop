@@ -90,6 +90,60 @@ export const exerciseApi = {
 }
 
 /**
+ * 今日训练卡与打卡（P4：执行闭环）
+ */
+export const todayPlanApi = {
+  /** 今日训练卡：动作、组次、目标心率区间、打卡状态 */
+  get() {
+    return http.get('/data/today-plan')
+  }
+}
+
+export const checkInApi = {
+  /** 打卡 / 跳过 / 部分完成（幂等，可带 Idempotency-Key） */
+  submit(data: {
+    planDetailId?: number
+    exerciseId?: string
+    exerciseName?: string
+    duration?: number
+    calories?: number
+    status?: 'DONE' | 'PARTIAL' | 'SKIPPED'
+    skippedReasons?: string
+    rpe?: number
+    pain?: boolean
+    date?: string
+    planId?: number
+  }) {
+    return http.post('/data/check-in', data)
+  },
+
+  /** 撤销某条打卡 */
+  undo(recordId: number) {
+    return http.delete(`/data/check-in/${recordId}`)
+  }
+}
+
+/**
+ * 统计与进阶建议（P4：服务端唯一口径）
+ */
+export const statsApi = {
+  /** 区间统计：依从率、训练量、热量收支、RPE 偏差、风险提示分级 */
+  summary(params?: { days?: number; startDate?: string; endDate?: string }) {
+    return http.get('/data/stats/summary', params)
+  },
+
+  /** 反馈与调整决策：HOLD / DELOAD / PROGRESS / SWAP / STOP */
+  advice(params?: { days?: number }) {
+    return http.get('/data/stats/advice', params)
+  },
+
+  /** 按建议生成下一版计划（≤10% 增幅，parent 指向上版） */
+  advance(params?: { days?: number }) {
+    return http.post('/data/stats/advance', params || {}, { timeout: 120000 })
+  }
+}
+
+/**
  * 动作库模块（知识库查询）
  */
 export const exerciseLibApi = {
@@ -106,6 +160,71 @@ export const exerciseLibApi = {
   /** 单个动作详情 */
   detail(id: number) {
     return http.get(`/exercise/${id}`)
+  },
+
+  /** 动作库寻源统计（P5）：覆盖率、证据等级分布、待审投稿数 */
+  sourceStats() {
+    return http.get('/exercise/sources/stats')
+  },
+
+  /** 投稿新动作（P5）：先落审核单，管理员通过后才进动作库 */
+  submitSource(data: {
+    name: string
+    category: string
+    muscleGroup: string
+    equipment: string
+    difficulty: number
+    metValue: number
+    defaultSets?: number
+    defaultReps?: string
+    description: string
+    contraindication?: string
+    sourceType: string
+    sourceTitle: string
+    sourceUrl: string
+    sourcePage?: string
+    evidenceLevel: string
+    licenseNote?: string
+  }) {
+    return http.post('/exercise/submit', data)
+  },
+
+  /** 我的投稿记录（含驳回原因） */
+  mySubmissions() {
+    return http.get('/exercise/my-submissions')
+  }
+}
+
+/**
+ * 食物成分库（P5 饮食寻源数据）
+ */
+export const foodLibApi = {
+  list(params?: { category?: string; keyword?: string }) {
+    return http.get('/food/list', params)
+  },
+  categories() {
+    return http.get('/food/categories')
+  },
+  detail(id: number) {
+    return http.get(`/food/${id}`)
+  }
+}
+
+/**
+ * 管理员：内容审核（P5）
+ */
+export const adminApi = {
+  exerciseSubmissions(params?: { status?: string; page?: number; size?: number }) {
+    return http.get('/admin/exercise-submissions', params)
+  },
+  approveSubmission(id: number, note?: string) {
+    return http.post(`/admin/exercise-submissions/${id}/approve`, { note })
+  },
+  rejectSubmission(id: number, reason: string) {
+    return http.post(`/admin/exercise-submissions/${id}/reject`, { reason })
+  },
+  contentStats() {
+    return http.get('/admin/content-stats')
   }
 }
 
@@ -137,8 +256,19 @@ export const planApi = {
     equipments?: string
     injuries?: string
     force?: boolean
+    model?: string
   }) {
     return http.post('/plan/generate', data || {}, { timeout: 120000 })
+  },
+
+  /** 版本回滚：把历史版本设为生效（P2） */
+  activate(id: number) {
+    return http.post(`/plan/${id}/activate`)
+  },
+
+  /** 对话式局部修订（P3）：自然语言改计划，返回结构化 Diff + 新版本 */
+  revise(data: { message: string; sessionKey?: string; model?: string; allowAction?: boolean }) {
+    return http.post('/plan/revise', data, { timeout: 60000 })
   },
 
   /** 删除计划 */

@@ -33,6 +33,8 @@ const handleLogin = async () => {
     if (response.data.success) {
       localStorage.setItem('fitlife_token', response.data.data.token)
       localStorage.setItem('fitlife_userId', response.data.data.user.id)
+      // P5：保存角色，管理员才显示内容审核入口（后端仍以 hasRole('ADMIN') 为准）
+      localStorage.setItem('fitlife_role', response.data.data.user.role || response.data.data.role || 'USER')
       ElMessage.success('登录成功')
       router.push('/dashboard')
     } else {

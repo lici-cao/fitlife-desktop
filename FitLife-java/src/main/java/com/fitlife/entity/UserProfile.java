@@ -55,4 +55,8 @@ public class UserProfile {
     /** 伤病史 / 禁忌部位，逗号分隔，如 "膝关节,腰椎" */
     @Column(length = 120)
     private String injuries;
+
+    /** 静息心率 bpm（P2 靶心率校验用；缺省按 70 估算） */
+    @Column(name = "hr_rest")
+    private Integer hrRest;
 }

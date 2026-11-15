@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from './stores/app'
@@ -17,8 +17,13 @@ const menuItems = [
   { path: '/exercise', title: '运动记录', icon: 'Coin' },
   { path: '/exercise-library', title: '动作库', icon: 'Collection' },
   { path: '/plan', title: '训练计划', icon: 'Calendar' },
-  { path: '/ai-companion', title: 'AI健身搭子', icon: 'Bot' }
+  { path: '/ai-companion', title: 'AI健身搭子', icon: 'Bot' },
+  { path: '/admin/review', title: '内容审核', icon: 'Checked', adminOnly: true }
 ]
+
+// 管理员专用菜单项（P5 内容审核）：只影响可见性，权限由后端校验
+const isAdmin = ref(localStorage.getItem('fitlife_role') === 'ADMIN')
+const visibleMenus = computed(() => menuItems.filter(i => !(i as any).adminOnly || isAdmin.value))
 
 // 初始化应用状态
 onMounted(() => {
@@ -56,7 +61,7 @@ const handleDateChange = (date: string) => {
         :collapse="isCollapse"
         @select="handleMenuSelect"
       >
-        <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
+        <el-menu-item v-for="item in visibleMenus" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
           <template #title>{{ item.title }}</template>
         </el-menu-item>

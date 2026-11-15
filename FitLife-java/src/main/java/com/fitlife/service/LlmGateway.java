@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fitlife.config.AiModelProperties;
 import com.fitlife.dto.AiModelVO;
+import com.fitlife.entity.AiCallLog;
+import com.fitlife.repository.AiCallLogRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -14,12 +16,15 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
@@ -38,7 +43,20 @@ import java.util.function.Consumer;
 public class LlmGateway {
 
     private final AiModelProperties props;
+    private final AiCallLogRepository callLogRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // ===== P2 guarded 调用参数 =====
+    /** 同厂商内重试次数（首次之外） */
+    private static final int GUARDED_RETRIES = 2;
+    /** 计划生成读超时：30s（旧路径保持 90s 不动） */
+    private static final int GUARDED_READ_TIMEOUT_MS = 30_000;
+    /** 连续失败 N 次后对该厂商熔断 30s */
+    private static final int BREAKER_THRESHOLD = 3;
+    private static final long BREAKER_OPEN_MS = 30_000;
+
+    private final Map<String, AtomicInteger> providerFailStreak = new ConcurrentHashMap<>();
+    private final Map<String, Long> providerOpenUntil = new ConcurrentHashMap<>();
 
     /** 大模型相关异常（未配置 Key、厂商返回错误、超时等） */
     public static class LlmException extends RuntimeException {
@@ -203,6 +221,236 @@ public class LlmGateway {
             if (conn != null) {
                 conn.disconnect();
             }
+        }
+    }
+
+    // ============================================================
+    // 三B、可靠性调用（P2：重试 + 跨厂商转移 + 熔断 + 计量）
+    // ============================================================
+
+    /** guarded 调用结果：正文 + 实际使用的模型 + 用量 */
+    public record GuardedResult(String content, String modelId, String providerName,
+                                int attempts, String fallbackFrom,
+                                Integer promptTokens, Integer completionTokens, Integer totalTokens,
+                                int latencyMs) {
+    }
+
+    /** 带 HTTP 状态码的内部异常，用于区分「可重试」与「直接转移」 */
+    private static class LlmHttpStatusException extends RuntimeException {
+        final int status;
+
+        LlmHttpStatusException(int status, String message) {
+            super(message);
+            this.status = status;
+        }
+    }
+
+    /**
+     * 计划生成主链路专用（图 2 第 ⑧ 步）。
+     *
+     * <p>候选链 = 首选模型 → 其他可用模型（跨厂商）；同厂商内最多重试
+     * {@value #GUARDED_RETRIES} 次（指数退避 1s/2s），仅对 IO/超时/5xx/429 重试，
+     * 401/403/404 直接转移；厂商连续 3 败熔断 30s；每次落选与最终结果都写
+     * ai_call_log。全部失败抛 LlmException，由编排器降级模板。
+     */
+    public GuardedResult completeGuarded(List<Map<String, String>> messages, double temperature,
+                                         int maxTokens, String preferredModelId,
+                                         String endpoint, Long userId) {
+        List<Resolved> chain = new ArrayList<>();
+        String preferred = hasText(preferredModelId) ? preferredModelId.trim() : defaultModelId();
+        try {
+            chain.add(resolve(preferred));
+        } catch (LlmException e) {
+            log.warn("首选模型 {} 不可用: {}", preferred, e.getMessage());
+        }
+        for (AiModelVO m : listModels()) {
+            if (!Boolean.TRUE.equals(m.getAvailable()) || m.getId().equals(preferred)) {
+                continue;
+            }
+            try {
+                Resolved r = resolve(m.getId());
+                if (chain.stream().noneMatch(c -> c.modelId().equals(r.modelId()))) {
+                    chain.add(r);
+                }
+            } catch (LlmException ignore) {
+                // 理论可用但解析失败，跳过
+            }
+        }
+        if (chain.isEmpty()) {
+            logCallRaw(endpoint, userId, preferred, 0, null, 0, false, "NO_PROVIDER");
+            throw new LlmException("当前没有可用的大模型：请为任一厂商配置 API Key");
+        }
+
+        long started = System.currentTimeMillis();
+        String lastError = "未知错误";
+        String lastErrorClass = "PROVIDER_ERROR";
+        int maxAttempts = 1 + GUARDED_RETRIES;
+        for (int i = 0; i < chain.size(); i++) {
+            Resolved target = chain.get(i);
+            if (isBreakerOpen(target.provider.getId())) {
+                log.warn("厂商 {} 熔断中，跳过", target.providerName());
+                continue;
+            }
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    Once once = tryOnce(target, messages, temperature, maxTokens, GUARDED_READ_TIMEOUT_MS);
+                    int latency = (int) (System.currentTimeMillis() - started);
+                    String fallbackFrom = (i > 0 || !target.modelId().equals(preferred)) ? preferred : null;
+                    recordSuccess(target.provider.getId());
+                    logCall(endpoint, userId, target, attempt, fallbackFrom, once, latency, true, null);
+                    return new GuardedResult(once.content, target.modelId(), target.providerName(),
+                            attempt, fallbackFrom, once.promptTokens, once.completionTokens,
+                            once.totalTokens, latency);
+                } catch (LlmHttpStatusException e) {
+                    lastError = e.getMessage();
+                    lastErrorClass = "HTTP_" + e.status;
+                    recordFailure(target.provider.getId());
+                    // 限流/服务端错误：同厂商退避重试；401/403/404 或重试耗尽：转移下一候选
+                    boolean retryable = e.status == 429 || e.status >= 500;
+                    if (retryable && attempt < maxAttempts) {
+                        sleepBackoff(attempt);
+                        continue;
+                    }
+                    break;
+                } catch (SocketTimeoutException e) {
+                    lastError = "读超时";
+                    lastErrorClass = "TIMEOUT";
+                    recordFailure(target.provider.getId());
+                    if (attempt < maxAttempts) {
+                        sleepBackoff(attempt);
+                        continue;
+                    }
+                    break;
+                } catch (IOException e) {
+                    lastError = e.getMessage();
+                    lastErrorClass = "IO";
+                    recordFailure(target.provider.getId());
+                    if (attempt < maxAttempts) {
+                        sleepBackoff(attempt);
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // 本候选穷尽：记失败行，再试下一厂商
+            logCall(endpoint, userId, target, maxAttempts, preferred,
+                    null, (int) (System.currentTimeMillis() - started), false, lastErrorClass);
+        }
+        throw new LlmException("AI 服务全部不可用（最后错误：" + lastError + "）");
+    }
+
+    private record Once(String content, Integer promptTokens, Integer completionTokens, Integer totalTokens) {
+    }
+
+    /** 单次 HTTP 调用：解析正文与 usage；带状态码异常供上层分类 */
+    private Once tryOnce(Resolved target, List<Map<String, String>> messages,
+                         double temperature, int maxTokens, int readTimeoutMs) throws IOException {
+        HttpURLConnection conn = null;
+        try {
+            conn = open(target, messages, temperature, maxTokens, false);
+            conn.setReadTimeout(readTimeoutMs);
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new LlmHttpStatusException(code,
+                        target.providerName() + " 返回 " + code + "：" + readError(conn));
+            }
+            String body = readAll(conn.getInputStream());
+            JsonNode root = objectMapper.readTree(body);
+            JsonNode choices = root.path("choices");
+            if (!choices.isArray() || choices.isEmpty()) {
+                throw new LlmHttpStatusException(502, target.providerName() + " 返回格式异常：没有 choices 字段");
+            }
+            JsonNode message = choices.get(0).path("message");
+            String content = message.path("content").asText("");
+            if (content.isBlank()) {
+                content = message.path("reasoning_content").asText("");
+            }
+            if (content.isBlank()) {
+                throw new LlmHttpStatusException(502, target.providerName() + " 没有返回有效文本");
+            }
+            JsonNode usage = root.path("usage");
+            Integer pt = usage.path("prompt_tokens").isNumber() ? usage.path("prompt_tokens").asInt() : null;
+            Integer ct = usage.path("completion_tokens").isNumber() ? usage.path("completion_tokens").asInt() : null;
+            Integer tt = usage.path("total_tokens").isNumber() ? usage.path("total_tokens").asInt()
+                    : (pt != null || ct != null ? (pt == null ? 0 : pt) + (ct == null ? 0 : ct) : null);
+            return new Once(content.trim(), pt, ct, tt);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
+    private void sleepBackoff(int attempt) {
+        try {
+            Thread.sleep(1000L * attempt);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private boolean isBreakerOpen(String providerId) {
+        Long until = providerOpenUntil.get(providerId);
+        return until != null && until > System.currentTimeMillis();
+    }
+
+    private void recordFailure(String providerId) {
+        int streak = providerFailStreak.computeIfAbsent(providerId, k -> new AtomicInteger())
+                .incrementAndGet();
+        if (streak >= BREAKER_THRESHOLD) {
+            providerOpenUntil.put(providerId, System.currentTimeMillis() + BREAKER_OPEN_MS);
+            log.warn("厂商 {} 连续失败 {} 次，熔断 {} 秒", providerId, streak, BREAKER_OPEN_MS / 1000);
+        }
+    }
+
+    private void recordSuccess(String providerId) {
+        AtomicInteger c = providerFailStreak.get(providerId);
+        if (c != null) {
+            c.set(0);
+        }
+        providerOpenUntil.remove(providerId);
+    }
+
+    /** 计量落库：失败不影响主流程 */
+    private void logCall(String endpoint, Long userId, Resolved target, int attempts, String fallbackFrom,
+                         Once once, int latencyMs, boolean success, String errorClass) {
+        try {
+            callLogRepository.save(AiCallLog.builder()
+                    .endpoint(endpoint == null ? "UNKNOWN" : endpoint)
+                    .userId(userId)
+                    .modelId(target.modelId())
+                    .provider(target.provider.getId())
+                    .attempts(attempts)
+                    .fallbackFrom(fallbackFrom)
+                    .latencyMs(latencyMs)
+                    .promptTokens(once == null ? null : once.promptTokens)
+                    .completionTokens(once == null ? null : once.completionTokens)
+                    .totalTokens(once == null ? null : once.totalTokens)
+                    .success(success ? 1 : 0)
+                    .errorClass(errorClass)
+                    .build());
+        } catch (Exception e) {
+            log.warn("ai_call_log 写入失败: {}", e.getMessage());
+        }
+    }
+
+    /** 没有任何可用厂商时的观测行（无 provider/target 可记） */
+    private void logCallRaw(String endpoint, Long userId, String modelId, int attempts, String fallbackFrom,
+                             int latencyMs, boolean success, String errorClass) {
+        try {
+            callLogRepository.save(AiCallLog.builder()
+                    .endpoint(endpoint == null ? "UNKNOWN" : endpoint)
+                    .userId(userId)
+                    .modelId(modelId)
+                    .provider("none")
+                    .attempts(attempts)
+                    .fallbackFrom(fallbackFrom)
+                    .latencyMs(latencyMs)
+                    .success(success ? 1 : 0)
+                    .errorClass(errorClass)
+                    .build());
+        } catch (Exception e) {
+            log.warn("ai_call_log 写入失败: {}", e.getMessage());
         }
     }
 

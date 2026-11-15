@@ -24,6 +24,7 @@ const history = ref<any[]>([])
 const activeDay = ref(1)
 const libStats = ref<any>(null)
 const showConfig = ref(true)
+const validationOpen = ref<string[]>([])
 
 const dayTabs = computed(() => {
   if (!plan.value?.days) return []
@@ -142,6 +143,114 @@ async function removeHistory(id: number) {
   }
 }
 
+/** P2：把历史版本设为生效（回滚） */
+async function activateHistory(id: number) {
+  try {
+    await ElMessageBox.confirm('把该版本设为当前生效计划？当前版本会归档，不会删除。', '版本回滚', { type: 'info' })
+    const res: any = await planApi.activate(id)
+    if (res.data?.code === 200) {
+      ElMessage.success(res.data.message || '已回滚')
+      await Promise.all([loadPlan(), loadHistory()])
+    } else {
+      ElMessage.error(res.data?.message || '回滚失败')
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e?.response?.data?.message || '回滚失败')
+    }
+  }
+}
+
+/** P2：来源徽标 */
+function sourceTag(link?: string): { label: string; type: string } {
+  switch (link) {
+    case 'LLM': return { label: '大模型编排', type: 'success' }
+    case 'LLM_REPAIRED': return { label: '大模型·已修复', type: 'primary' }
+    case 'TEMPLATE': return { label: '规则模板', type: 'warning' }
+    default: return { label: '', type: 'info' }
+  }
+}
+
+const sourceInfo = computed(() => sourceTag(plan.value?.sourceLink))
+const validation = computed(() => plan.value?.validationReport || null)
+
+// ===== P5：饮食与引用 =====
+const dietDays = computed<any[]>(() => plan.value?.dietDays || [])
+const dietDay = ref('1')
+const refsOpen = ref<string[]>([])
+const references = computed<any[]>(() => plan.value?.references || [])
+function kindLabel(kind?: string) {
+  switch (kind) {
+    case 'GUIDELINE': return '指南'
+    case 'KNOWLEDGE': return '知识条目'
+    case 'EXERCISE': return '动作出处'
+    case 'FOOD': return '成分表'
+    default: return '来源'
+  }
+}
+
+// ===== P3：对话式局部修订 =====
+const reviseInput = ref('')
+const reviseLoading = ref(false)
+const lastRevise = ref<any>(null)
+/** 服务端会话键：同一会话内多轮修订共享上下文 */
+const reviseSessionKey = localStorage.getItem('fitlife_revise_session') || ''
+const quickPrompts = [
+  '把周三的深蹲换成臀桥',
+  '深蹲强度太高了，降一点',
+  '去掉周三的平板支撑',
+  '重新生成一份计划'
+]
+
+async function sendRevise(msg?: string) {
+  const message = (msg ?? (reviseInput.value || '')).trim()
+  if (!message) {
+    ElMessage.warning('请输入想怎么调整，例如「把周三的深蹲换成臀桥」')
+    return
+  }
+  reviseLoading.value = true
+  try {
+    const res: any = await planApi.revise({
+      message,
+      sessionKey: reviseSessionKey || undefined
+    })
+    if (res.data?.code === 200) {
+      const data = res.data.data || {}
+      lastRevise.value = data
+      if (data.sessionKey) {
+        localStorage.setItem('fitlife_revise_session', data.sessionKey)
+      }
+      if (data.action === 'REVISE' && data.plan) {
+        plan.value = data.plan
+        pickFirstTrainDay()
+        ElMessage.success(`已生成 v${data.plan.version}（对话修订）`)
+        await loadHistory()
+      } else if (data.action === 'GENERATE' && data.plan) {
+        plan.value = data.plan
+        pickFirstTrainDay()
+        ElMessage.success('已重新生成计划')
+        await loadHistory()
+      } else {
+        ElMessage.info(data.reply || data.note || '已收到指令')
+      }
+    } else {
+      ElMessage.error(res.data?.message || '修订失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '修订失败，请稍后重试')
+  } finally {
+    reviseLoading.value = false
+  }
+}
+
+function diffTagType(t?: string): string {
+  switch (t) {
+    case 'ADDED': return 'success'
+    case 'REMOVED': return 'danger'
+    default: return 'warning'
+  }
+}
+
 </script>
 
 <template>
@@ -242,14 +351,21 @@ async function removeHistory(id: number) {
           <el-empty v-if="history.length === 0" description="暂无历史计划" :image-size="60" />
           <div v-for="h in history" :key="h.id" class="history-item">
             <div class="history-main">
-              <div class="history-title">{{ h.title }}</div>
+              <div class="history-title">
+                {{ h.title }}
+                <el-tag v-if="h.version" size="small" effect="plain" class="ver-tag">v{{ h.version }}</el-tag>
+              </div>
               <div class="history-meta">
                 {{ h.goal }} · {{ h.weeklyDays }}天/周
                 <el-tag v-if="h.status === 'ACTIVE'" size="small" type="success">当前</el-tag>
+                <el-tag v-else-if="sourceTag(h.sourceLink).label" size="small" :type="sourceTag(h.sourceLink).type as any" effect="plain">
+                  {{ sourceTag(h.sourceLink).label }}
+                </el-tag>
               </div>
             </div>
             <div class="history-ops">
               <el-button link type="primary" size="small" @click="viewHistory(h.id)">查看</el-button>
+              <el-button v-if="h.status !== 'ACTIVE'" link type="warning" size="small" @click="activateHistory(h.id)">回滚</el-button>
               <el-button link type="danger" size="small" @click="removeHistory(h.id)">删除</el-button>
             </div>
           </div>
@@ -263,13 +379,19 @@ async function removeHistory(id: number) {
         </el-card>
 
         <template v-else>
-          <el-card shadow="never" class="mb16">
+           <el-card shadow="never" class="mb16">
             <template #header>
               <div class="card-header">
-                <span>{{ plan.title }}</span>
-                <el-tag :type="plan.aiGenerated ? 'success' : 'warning'" size="small">
-                  {{ plan.aiGenerated ? 'AI 生成' : '规则模板' }}
-                </el-tag>
+                <span>
+                  {{ plan.title }}
+                  <el-tag v-if="plan.version" size="small" effect="plain" class="ver-tag">v{{ plan.version }}</el-tag>
+                </span>
+                <span class="header-tags">
+                  <el-tag v-if="sourceInfo.label" size="small" :type="sourceInfo.type as any">{{ sourceInfo.label }}</el-tag>
+                  <el-tag :type="plan.aiGenerated ? 'success' : 'warning'" size="small">
+                    {{ plan.aiGenerated ? 'AI 生成' : '规则模板' }}
+                  </el-tag>
+                </span>
               </div>
             </template>
             <div class="plan-summary">{{ plan.summary }}</div>
@@ -281,6 +403,172 @@ async function removeHistory(id: number) {
               show-icon
               class="mt8"
             />
+
+            <!-- P2：规则校验报告 -->
+            <el-collapse v-if="validation" v-model="validationOpen" class="mt8">
+              <el-collapse-item name="v">
+                <template #title>
+                  <span class="valid-title">
+                    科学性校验报告
+                    <el-tag size="small" :type="validation.passed ? 'success' : 'danger'" class="ver-tag">
+                      {{ validation.passed ? '通过' : '存在风险' }}
+                    </el-tag>
+                    <el-tag size="small" effect="plain" class="ver-tag">得分 {{ validation.score }}</el-tag>
+                  </span>
+                </template>
+                <el-table :data="validation.checks || []" size="small" style="width: 100%">
+                  <el-table-column prop="code" label="项" width="60" align="center" />
+                  <el-table-column prop="name" label="校验项" width="140" />
+                  <el-table-column label="级别" width="80" align="center">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.level === 'ERROR' ? 'danger' : row.level === 'WARN' ? 'warning' : 'success'">
+                        {{ row.level }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="detail" label="说明" min-width="220" />
+                </el-table>
+                <ul v-if="validation.riskNotes?.length" class="risk-notes">
+                  <li v-for="(n, i) in validation.riskNotes" :key="i">{{ n }}</li>
+                </ul>
+              </el-collapse-item>
+            </el-collapse>
+
+            <!-- P5：饮食方案（热量单位统一 kcal，份量给出克数） -->
+            <el-card v-if="dietDays.length" shadow="never" class="mt8 diet-card">
+              <template #header>
+                <div class="diet-header">
+                  <span class="diet-title">配套饮食方案</span>
+                  <el-tag size="small" effect="plain">
+                    目标 {{ Math.round(plan.dailyKcalTarget || 0) }} kcal/天
+                  </el-tag>
+                  <el-tag size="small" effect="plain" type="success">蛋白 {{ Math.round(plan.proteinTarget || 0) }} g</el-tag>
+                  <el-tag size="small" effect="plain" type="warning">碳水 {{ Math.round(plan.carbTarget || 0) }} g</el-tag>
+                  <el-tag size="small" effect="plain">脂肪 {{ Math.round(plan.fatTarget || 0) }} g</el-tag>
+                </div>
+              </template>
+              <el-tabs v-model="dietDay" type="card">
+                <el-tab-pane
+                  v-for="d in dietDays"
+                  :key="d.dayOfWeek"
+                  :label="`${d.dayLabel} · ${Math.round(d.kcalTotal)} kcal`"
+                  :name="String(d.dayOfWeek)"
+                >
+                  <div class="diet-day-sum">
+                    合计 {{ Math.round(d.kcalTotal) }} kcal ｜ 蛋白 {{ d.proteinTotal }} g ｜ 碳水 {{ d.carbTotal }} g ｜ 脂肪 {{ d.fatTotal }} g
+                  </div>
+                  <el-table :data="d.items || []" size="small" style="width: 100%">
+                    <el-table-column prop="meal" label="餐次" width="72" align="center" />
+                    <el-table-column prop="foodName" label="食物" width="150" />
+                    <el-table-column label="份量" width="150">
+                      <template #default="{ row }">
+                        {{ row.amountDesc || `${row.grams} ${row.unitLabel}` }}
+                        <span class="diet-gram">（{{ row.grams }} g）</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="热量" width="92" align="right">
+                      <template #default="{ row }">{{ Math.round(row.kcal) }} kcal</template>
+                    </el-table-column>
+                    <el-table-column label="蛋白/碳水/脂肪" width="150" align="center">
+                      <template #default="{ row }">
+                        {{ row.proteinG }} / {{ row.carbG }} / {{ row.fatG }} g
+                      </template>
+                    </el-table-column>
+                    <el-table-column label="数据来源" min-width="160">
+                      <template #default="{ row }">
+                        <a v-if="row.sourceUrl" :href="row.sourceUrl" target="_blank" rel="noopener" class="src-link">
+                          {{ row.sourceTitle || '成分表' }}
+                        </a>
+                        <span v-else class="src-missing">未标注</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </el-tab-pane>
+              </el-tabs>
+              <div class="diet-note">
+                热量统一按 kcal 标注，克数为可食部重量；同一食物在不同成分表中数值可能略有差异，以所选来源为准。
+              </div>
+            </el-card>
+
+            <!-- P5：AI 引用清单 + 科学性说明 -->
+            <el-collapse v-model="refsOpen" class="mt8">
+              <el-collapse-item name="r">
+                <template #title>
+                  <span class="valid-title">
+                    本版依据与引用
+                    <el-tag size="small" effect="plain" class="ver-tag">{{ references.length }} 条来源</el-tag>
+                  </span>
+                </template>
+                <p v-if="plan.scienceNote" class="science-note">{{ plan.scienceNote }}</p>
+                <el-table :data="references" size="small" style="width: 100%">
+                  <el-table-column label="类型" width="92" align="center">
+                    <template #default="{ row }">
+                      <el-tag size="small" effect="plain">{{ kindLabel(row.kind) }}</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="title" label="来源" min-width="180" />
+                  <el-table-column prop="publisher" label="发布方" width="160" />
+                  <el-table-column label="证据等级" width="86" align="center">
+                    <template #default="{ row }">
+                      <el-tag size="small" :type="row.evidenceLevel === 'A' ? 'success' : 'info'">
+                        {{ row.evidenceLevel || '—' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="usedFor" label="用在哪" min-width="200" />
+                  <el-table-column label="链接" width="80" align="center">
+                    <template #default="{ row }">
+                      <a v-if="row.url" :href="row.url" target="_blank" rel="noopener" class="src-link">打开</a>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </el-collapse-item>
+            </el-collapse>
+
+            <!-- P3：对话式微调 -->
+            <div class="revise-box mt8">
+              <div class="revise-title">
+                对话式微调
+                <span class="revise-sub">用一句话改计划，改动会生成新版本，可随时回滚</span>
+              </div>
+              <div class="revise-input">
+                <el-input
+                  v-model="reviseInput"
+                  placeholder="例如：把周三的深蹲换成臀桥 / 深蹲强度降一点 / 去掉平板支撑"
+                  :disabled="reviseLoading"
+                  @keyup.enter="sendRevise()"
+                />
+                <el-button type="primary" :loading="reviseLoading" @click="sendRevise()">
+                  {{ reviseLoading ? '处理中…' : '发送' }}
+                </el-button>
+              </div>
+              <div class="revise-quick">
+                <el-tag
+                  v-for="q in quickPrompts"
+                  :key="q"
+                  class="revise-chip"
+                  effect="plain"
+                  @click="sendRevise(q)"
+                >{{ q }}</el-tag>
+              </div>
+
+              <!-- 上一轮修订结果 -->
+              <div v-if="lastRevise" class="revise-result">
+                <div class="revise-reply">{{ lastRevise.reply || lastRevise.note }}</div>
+                <div v-if="lastRevise.intentByLlm !== undefined" class="revise-meta">
+                  意图识别：{{ lastRevise.intentByLlm ? '大模型' : '规则' }}
+                  <el-tag v-if="lastRevise.action" size="small" effect="plain" class="ver-tag">{{ lastRevise.action }}</el-tag>
+                </div>
+                <div v-if="lastRevise.diff?.length" class="revise-diff">
+                  <div v-for="(d, i) in lastRevise.diff" :key="i" class="diff-item">
+                    <el-tag size="small" :type="diffTagType(d.type) as any">{{ d.type }}</el-tag>
+                    <span class="diff-day">{{ d.dayLabel }}</span>
+                    <span class="diff-name">{{ d.exerciseName }}</span>
+                    <span class="diff-detail">{{ d.detail }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </el-card>
 
           <el-card shadow="never">
@@ -371,6 +659,26 @@ async function removeHistory(id: number) {
 .history-meta { font-size: 12px; color: #909399; margin-top: 4px; display: flex; gap: 6px; align-items: center; }
 .history-ops { display: flex; gap: 2px; }
 
+.ver-tag { margin-left: 6px; }
+.header-tags { display: inline-flex; gap: 6px; align-items: center; }
+.valid-title { display: inline-flex; align-items: center; font-size: 13px; color: #606266; }
+.risk-notes { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: #909399; line-height: 1.8; }
+
+.revise-box { border-top: 1px dashed #e4e7ed; padding-top: 10px; }
+.revise-title { font-size: 14px; font-weight: 600; color: #303133; display: flex; align-items: baseline; gap: 8px; }
+.revise-sub { font-size: 12px; font-weight: 400; color: #909399; }
+.revise-input { display: flex; gap: 8px; margin-top: 8px; }
+.revise-quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.revise-chip { cursor: pointer; }
+.revise-result { margin-top: 10px; background: #f5f7fa; border-radius: 8px; padding: 10px 12px; }
+.revise-reply { font-size: 13px; color: #303133; line-height: 1.7; }
+.revise-meta { font-size: 12px; color: #909399; margin-top: 6px; }
+.revise-diff { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.diff-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.diff-day { color: #606266; min-width: 40px; }
+.diff-name { color: #303133; font-weight: 500; }
+.diff-detail { color: #909399; flex: 1; }
+
 .tab-label { display: inline-flex; align-items: center; gap: 4px; }
 
 .day-header {
@@ -387,4 +695,18 @@ async function removeHistory(id: number) {
 .rest-day { text-align: center; padding: 40px 0; color: #909399; }
 .rest-title { font-size: 16px; font-weight: 600; margin: 10px 0 6px; color: #606266; }
 .rest-tip { font-size: 13px; color: #a8abb2; }
+
+/* P5：饮食与引用 */
+.diet-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.diet-title { font-size: 15px; font-weight: 600; color: #303133; margin-right: 4px; }
+.diet-day-sum { font-size: 12px; color: #909399; margin-bottom: 8px; }
+.diet-gram { color: #a8abb2; }
+.diet-note { margin-top: 8px; font-size: 12px; color: #a8abb2; line-height: 1.7; }
+.science-note {
+  font-size: 13px; line-height: 1.85; color: #606266;
+  background: #f5f7fa; border-radius: 8px; padding: 10px 12px; margin: 0 0 10px;
+}
+.src-link { color: #409eff; text-decoration: none; }
+.src-link:hover { text-decoration: underline; }
+.src-missing { color: #c0c4cc; }
 </style>

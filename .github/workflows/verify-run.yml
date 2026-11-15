@@ -1,0 +1,307 @@
+name: verify-run-v5
+
+# 云端完整跑一遍 FitLife 5.0：构建 → 单元测试 → 以桌面(desktop)档案用 H2 启动 → 打通核心业务流程 → 输出报告
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "v5-desktop"
+      - "main"
+
+env:
+  JAVA_VERSION: "17"
+  NODE_VERSION: "22"
+  APP_PORT: "18080"
+
+jobs:
+  verify:
+    name: Deploy, start and exercise core flows
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: FitLife-web/package-lock.json
+
+      - name: Build frontend (desktop mode)
+        working-directory: FitLife-web
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npm run build:desktop || npx vite build --mode desktop
+          test -f dist/index.html
+          echo "前端产物大小：$(du -sh dist | cut -f1)"
+
+      - name: Copy dist into backend static/
+        run: |
+          rm -rf FitLife-java/src/main/resources/static
+          mkdir -p FitLife-java/src/main/resources/static
+          cp -R FitLife-web/dist/. FitLife-java/src/main/resources/static/
+          ls FitLife-java/src/main/resources/static | head -n 10
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Unit tests
+        id: unit
+        continue-on-error: true
+        working-directory: FitLife-java
+        run: |
+          mkdir -p ../artifacts
+          mvn -B -ntp test 2>&1 | tee ../artifacts/unit-test.log | tail -n 40
+          echo "unit_exit=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+
+      - name: Maven package
+        working-directory: FitLife-java
+        run: mvn -B -ntp -DskipTests package && ls -lh target/*.jar
+
+      - name: Start application (desktop profile + H2)
+        run: |
+          mkdir -p artifacts run/home
+          export FITLIFE_HOME="$PWD/run/home"
+          export SERVER_PORT=${{ env.APP_PORT }}
+          JAR=$(ls FitLife-java/target/*.jar | head -n 1)
+          echo "启动 jar: $JAR"
+          nohup java -jar "$JAR" \
+            --spring.profiles.active=desktop \
+            --fitlife.desktop.open-browser=false \
+            --fitlife.desktop.demo-account=true > artifacts/app.log 2>&1 &
+          echo $! > artifacts/app.pid
+          echo "已后台启动，PID=$(cat artifacts/app.pid)"
+
+      - name: Wait for /api/health
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS "http://127.0.0.1:${APP_PORT}/api/health" -o /dev/null; then
+              echo "健康检查通过（第 ${i} 次，约 $((i*2))s）"
+              curl -s "http://127.0.0.1:${APP_PORT}/api/health"; echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "启动超时，日志尾部："
+          tail -n 120 artifacts/app.log
+          exit 1
+
+      - name: Exercise core flows
+        run: |
+          set -uo pipefail
+          BASE="http://127.0.0.1:${APP_PORT}"
+          R=artifacts/report.md
+          : > "$R"
+          echo "# FitLife 5.0 云端运行报告" >> "$R"
+          echo "" >> "$R"
+          echo "运行环境：ubuntu-latest / JDK ${JAVA_VERSION} / Node ${NODE_VERSION} / 桌面档案 + H2 文件库" >> "$R"
+          echo "" >> "$R"
+          pass=0; fail=0; LAST_BODY=""
+
+          say() { echo "$1"; echo "$1" >> "$R"; }
+
+          req() {
+            local name="$1" method="$2" path="$3" data="$4" token="${5:-}" extra="${6:-}"
+            local hdr=(-H "Content-Type: application/json")
+            [ -n "$token" ] && hdr+=(-H "Authorization: Bearer $token")
+            [ -n "$extra" ] && hdr+=(-H "$extra")
+            LAST_BODY=$(mktemp)
+            local code
+            if [ "$data" = "-" ]; then
+              code=$(curl -s -o "$LAST_BODY" -w '%{http_code}' -X "$method" "${hdr[@]}" "$BASE$path")
+            else
+              code=$(curl -s -o "$LAST_BODY" -w '%{http_code}' -X "$method" "${hdr[@]}" -d "$data" "$BASE$path")
+            fi
+            local snippet
+            snippet=$(head -c 350 "$LAST_BODY" | tr '\n' ' ' | tr -d '\r')
+            if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+              pass=$((pass+1)); say "- [OK $code] **$name** — \`$method $path\` → $snippet"
+            else
+              fail=$((fail+1)); say "- [FAIL $code] **$name** — \`$method $path\` → $snippet"
+            fi
+          }
+
+          TODAY=$(date +%F)
+          say "## 0. 构建与单元测试"
+          say "- 前端构建：已完成（desktop 模式，hash 路由）"
+          say "- 后端打包：已完成（spring-boot fat jar）"
+          if [ -f artifacts/unit-test.log ]; then
+            TESTS_LINE=$(grep -E "Tests run:.*Failures" artifacts/unit-test.log | tail -n 1 || true)
+            say "- 单元测试：${TESTS_LINE:-未解析到汇总行}"
+            if echo "$TESTS_LINE" | grep -q "Failures: 0, Errors: 0"; then
+              pass=$((pass+1)); say "- [OK] **单元测试全绿** — $TESTS_LINE"
+            else
+              fail=$((fail+1)); say "- [FAIL] **单元测试异常** — ${TESTS_LINE:-无汇总行}"
+            fi
+          fi
+          say ""
+          say "## 1. 部署与启动"
+          req "健康检查" GET /api/health - 
+          say ""
+          say "## 2. 认证与账号"
+          req "注册测试账号" POST /api/auth/register '{"username":"e2e_user","password":"Test1234"}'
+          req "登录测试账号" POST /api/auth/login '{"username":"e2e_user","password":"Test1234"}'
+          TOKEN=$(jq -r '.data.token // empty' "$LAST_BODY" 2>/dev/null || true)
+          if [ -z "$TOKEN" ]; then
+            say "- 提示：注册账号登录未取到 token，改用桌面演示账号 dandan/123456"
+            req "登录演示账号" POST /api/auth/login '{"username":"dandan","password":"123456"}'
+            TOKEN=$(jq -r '.data.token // empty' "$LAST_BODY" 2>/dev/null || true)
+          fi
+          say "- token 获取结果：$([ -n "$TOKEN" ] && echo 已获取 || echo 未获取)"
+          say ""
+          say "## 3. 用户档案"
+          req "写入档案" PUT /api/data/profile '{"name":"E2E 用户","gender":"male","age":28,"height":175.0,"weight":72.0,"goal":"减脂","activityLevel":"moderate","experience":"beginner","weeklyDays":3,"sessionMinutes":45,"equipments":"哑铃,瑜伽垫","injuries":"","hrRest":68}' "$TOKEN"
+          req "读取档案" GET /api/data/profile - "$TOKEN"
+          say ""
+          say "## 4. 动作库"
+          req "动作库统计" GET /api/exercise/stats - "$TOKEN"
+          req "动作库列表" GET /api/exercise/list - "$TOKEN"
+          req "动作库来源统计(P5)" GET /api/exercise/sources/stats - "$TOKEN"
+          say ""
+          say "## 5. 食物成分库（P5 新增）"
+          req "食物分类" GET /api/food/categories - "$TOKEN"
+          req "食物列表" GET /api/food/list - "$TOKEN"
+          FID=$(jq -r '.data[0].id // .data.items[0].id // empty' "$LAST_BODY" 2>/dev/null || true)
+          if [ -n "$FID" ]; then
+            req "食物详情(#$FID)" GET "/api/food/$FID" - "$TOKEN"
+          else
+            say "- 食物库为空，跳过详情用例"
+          fi
+          say ""
+          say "## 6. 计划编排（无 AI Key 时的降级路径）"
+          req "生成训练计划" POST /api/plan/generate '{"goal":"减脂","experience":"beginner","weeklyDays":3,"sessionMinutes":45,"equipments":"哑铃,瑜伽垫","injuries":"","force":true}' "$TOKEN"
+          req "当前计划" GET /api/plan/current - "$TOKEN"
+          req "计划列表" GET /api/plan/list - "$TOKEN"
+          PLAN_ID=$(jq -r '.data.id // .data[0].id // empty' "$LAST_BODY" 2>/dev/null || true)
+          if [ -n "$PLAN_ID" ]; then
+            req "计划详情(#$PLAN_ID)" GET "/api/plan/$PLAN_ID" - "$TOKEN"
+          fi
+          req "对话式修订" POST /api/plan/chat '{"message":"把今天训练强度降低一点","allowAction":false}' "$TOKEN"
+          req "运动搭配匹配" POST /api/plan/match '{"goal":"增肌","days":3,"equipments":"哑铃","sessionMinutes":45}' "$TOKEN"
+          say ""
+          say "## 7. 饮食方案（P5 新增）"
+          req "当前计划详情(取饮食)" GET /api/plan/current - "$TOKEN"
+          DIET_N=$(jq -r '(.data.dietDays // .data.diet // []) | length' "$LAST_BODY" 2>/dev/null || echo 0)
+          say "- 计划内饮食天数：$DIET_N"
+          if [ "$DIET_N" -gt 0 ] 2>/dev/null; then
+            pass=$((pass+1)); say "- [OK] **饮食方案已随计划下发** — dietDays=$DIET_N"
+            jq -r '(.data.dietDays[0] // .data.diet[0]) | tostring' "$LAST_BODY" 2>/dev/null | head -c 400 | sed 's/^/    - /' >> "$R" || true
+          else
+            fail=$((fail+1)); say "- [FAIL] **计划未包含饮食方案** — dietDays 为 0/缺失"
+          fi
+          req "AI 饮食建议(无 Key 应降级)" POST /api/ai/diet-suggestion '{"preference":"高蛋白","days":1}' "$TOKEN"
+          say ""
+          say "## 8. 今日训练与打卡"
+          req "今日训练卡" GET "/api/data/today-plan?date=$TODAY" - "$TOKEN"
+          PID=$(jq -r '.data.planId // empty' "$LAST_BODY" 2>/dev/null || true)
+          PDID=$(jq -r '.data.items[0].planDetailId // empty' "$LAST_BODY" 2>/dev/null || true)
+          CIDATE="$TODAY"; EXID=""; EXNAME=""
+          if [ -n "$PDID" ]; then
+            EXID=$(jq -r '.data.items[0].exerciseId // empty' "$LAST_BODY")
+            EXNAME=$(jq -r '.data.items[0].exerciseName // empty' "$LAST_BODY")
+          else
+            say "- 今日为休息日或计划无动作，向后寻找最近训练日"
+            for k in 1 2 3 4 5 6; do
+              D=$(date -d "+$k day" +%F)
+              req "训练卡($D)" GET "/api/data/today-plan?date=$D" - "$TOKEN"
+              PDID=$(jq -r '.data.items[0].planDetailId // empty' "$LAST_BODY" 2>/dev/null || true)
+              if [ -n "$PDID" ]; then
+                CIDATE="$D"
+                EXID=$(jq -r '.data.items[0].exerciseId // empty' "$LAST_BODY")
+                EXNAME=$(jq -r '.data.items[0].exerciseName // empty' "$LAST_BODY")
+                break
+              fi
+            done
+          fi
+          say "- 打卡目标：date=$CIDATE / planId=${PID:-空} / planDetailId=${PDID:-空} / 动作=${EXNAME:-空}"
+          if [ -n "$PDID" ] && [ -n "$EXID" ]; then
+            BODY="{\"planId\":$PID,\"planDetailId\":$PDID,\"exerciseId\":$EXID,\"exerciseName\":\"$EXNAME\",\"duration\":30,\"calories\":120,\"status\":\"DONE\",\"rpe\":6,\"pain\":false,\"date\":\"$CIDATE\"}"
+            KEY="e2e-checkin-$(date +%s)"
+            req "打卡（首次）" POST /api/data/check-in "$BODY" "$TOKEN" "Idempotency-Key: $KEY"
+            req "打卡（同 Key 重复提交→幂等）" POST /api/data/check-in "$BODY" "$TOKEN" "Idempotency-Key: $KEY"
+            req "打卡后训练卡" GET "/api/data/today-plan?date=$CIDATE" - "$TOKEN"
+            say "- 打卡后 doneItems=$(jq -r '.data.doneItems // 0' "$LAST_BODY" 2>/dev/null || echo 0) / adherenceRate=$(jq -r '.data.adherenceRate // 0' "$LAST_BODY" 2>/dev/null || echo 0)%"
+            req "打卡记录查询" GET "/api/data/daily-records?startDate=$CIDATE&endDate=$CIDATE" - "$TOKEN"
+            req "撤销打卡" DELETE "/api/data/check-in?planDetailId=$PDID&date=$CIDATE" - "$TOKEN"
+          else
+            say "- 未找到可打卡的计划动作，跳过打卡验证"
+          fi
+          req "数据同步" GET /api/data/sync - "$TOKEN"
+          say ""
+          say "## 9. 内容贡献（P5 投稿）"
+          SUB_NAME="E2E 测试动作 $(date +%s)"
+          SUB_BODY="{\"name\":\"$SUB_NAME\",\"category\":\"力量\",\"muscleGroup\":\"胸部\",\"equipment\":\"哑铃\",\"difficulty\":2,\"metValue\":4.5,\"defaultSets\":3,\"defaultReps\":\"10-12 次\",\"description\":\"云端验证用投稿动作\",\"contraindication\":\"无\",\"sourceType\":\"GUIDELINE\",\"sourceTitle\":\"ACSM 运动测试与运动处方指南\",\"sourceUrl\":\"https://www.acsm.org/education-resources/books\",\"sourcePage\":\"P120\",\"evidenceLevel\":\"A\",\"licenseNote\":\"仅内部验证使用\"}"
+          req "提交动作投稿" POST /api/exercise/submit "$SUB_BODY" "$TOKEN"
+          req "我的投稿列表" GET /api/exercise/my-submissions - "$TOKEN"
+          say ""
+          say "## 10. 统计与进阶建议"
+          req "统计汇总" GET "/api/data/stats/summary?days=7" - "$TOKEN"
+          req "训练建议" GET /api/data/stats/advice - "$TOKEN"
+          req "进阶处理" POST /api/data/stats/advance '{"days":7}' "$TOKEN"
+          say ""
+          say "## 11. 权限与静态资源"
+          ADMIN_CODE=$(curl -s -o /tmp/admin.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/users")
+          if [ "$ADMIN_CODE" = "403" ]; then
+            pass=$((pass+1)); say "- [OK 403] **权限拦截生效** — 普通用户访问 \`GET /api/admin/users\` → 被拒绝（预期行为）"
+          else
+            fail=$((fail+1)); say "- [FAIL $ADMIN_CODE] **权限拦截未生效** — 普通用户访问 \`/api/admin/users\` 返回 $ADMIN_CODE（预期 403）"
+          fi
+          SUB_ADMIN_CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$BASE/api/admin/exercise-submissions")
+          if [ "$SUB_ADMIN_CODE" = "403" ]; then
+            pass=$((pass+1)); say "- [OK 403] **投稿审核仅管理员** — 普通用户访问 \`GET /api/admin/exercise-submissions\` → 被拒绝"
+          else
+            fail=$((fail+1)); say "- [FAIL $SUB_ADMIN_CODE] **投稿审核权限异常** — 返回 $SUB_ADMIN_CODE（预期 403）"
+          fi
+          UNAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/data/profile")
+          if [ "$UNAUTH_CODE" = "401" ] || [ "$UNAUTH_CODE" = "403" ]; then
+            pass=$((pass+1)); say "- [OK $UNAUTH_CODE] **未登录拦截生效** — 匿名访问 \`/api/data/profile\` → 被拒绝"
+          else
+            fail=$((fail+1)); say "- [FAIL $UNAUTH_CODE] **未登录拦截未生效** — 匿名访问返回 $UNAUTH_CODE"
+          fi
+          INDEX_CODE=$(curl -s -o artifacts/index.html -w '%{http_code}' "$BASE/")
+          if [ "$INDEX_CODE" = "200" ] && grep -q 'id="app"' artifacts/index.html; then
+            pass=$((pass+1)); say "- [OK $INDEX_CODE] **内嵌前端首页** — \`GET /\` → 返回 SPA 入口（hash 路由）"
+          else
+            fail=$((fail+1)); say "- [FAIL $INDEX_CODE] **内嵌前端首页** — \`GET /\` → 未返回预期 SPA 入口"
+          fi
+          say ""
+          say "## 12. 运行期异常扫描"
+          ERR=$(grep -c -E "ERROR|Exception|Caused by" artifacts/app.log || true)
+          AIERR=$(grep -c "AI chat error" artifacts/app.log || true)
+          say "- 日志中 ERROR/异常行数：$ERR（其中 \"AI chat error\" ${AIERR} 条，属未配置 AI Key 的预期降级）"
+          say "- 非预期异常行："
+          grep -E "ERROR|Exception|Caused by" artifacts/app.log | grep -v "AI chat error" | head -n 10 | sed 's/^/    - /' >> "$R" || true
+          grep -E "ERROR|Exception|Caused by" artifacts/app.log | grep -v "AI chat error" | head -n 10 || echo "    （无）"
+          say ""
+          say "## 汇总"
+          say "- 通过步骤：$pass"
+          say "- 失败步骤：$fail"
+          say ""
+          say "## 关键日志片段"
+          say '```'
+          { grep -E "Started FitLifeApplication|Tomcat started|H2 console|jwt|演示账号|动作库|Hibernate: create|ERROR" artifacts/app.log | head -n 40; } >> "$R" 2>/dev/null || true
+          say '```'
+          echo "===== REPORT ====="
+          cat "$R"
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitlife-verify-report
+          path: |
+            artifacts/report.md
+            artifacts/app.log
+            artifacts/unit-test.log
+          if-no-files-found: warn
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f artifacts/app.pid ]; then kill "$(cat artifacts/app.pid)" 2>/dev/null || true; fi

@@ -4,70 +4,89 @@ import com.fitlife.entity.User;
 import com.fitlife.entity.UserProfile;
 import com.fitlife.repository.UserProfileRepository;
 import com.fitlife.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.core.annotation.Order;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+
 /**
- * 桌面版演示账号初始化器。
+ * 桌面版首次启动时创建一个演示账号，避免「打开就是登录页却登不进去」。
  *
- * <p>独立安装包不能要求用户先自己注册一遍才能看到界面，因此首次启动时若用户表为空，
- * 自动创建一个演示账号（demo / 123456）并配好默认档案。
- *
- * <p>可通过 {@code fitlife.desktop.demo-account=false} 关闭。
- * 只做「查无则补」，绝不覆盖用户已有账号。
+ * <p>行为由 {@code fitlife.desktop.demo-account} 控制：
+ * <pre>
+ * fitlife:
+ *   desktop:
+ *     demo-account: false   # 不想暴露演示账号就关掉
+ * </pre>
+ * 账号：dandan / 123456
  */
-@Slf4j
 @Component
-@Order(20)
-@RequiredArgsConstructor
 public class DesktopDemoAccountInitializer implements ApplicationRunner {
 
-    private static final String DEMO_USERNAME = "demo";
-    private static final String DEMO_PASSWORD = "123456";
+    private static final Logger log = LoggerFactory.getLogger(DesktopDemoAccountInitializer.class);
+
+    public static final String DEMO_USERNAME = "dandan";
+    public static final String DEMO_PASSWORD = "123456";
 
     private final UserRepository userRepository;
-    private final UserProfileRepository profileRepository;
+    private final UserProfileRepository userProfileRepository;
     private final PasswordEncoder passwordEncoder;
 
     @Value("${fitlife.desktop.demo-account:true}")
     private boolean enabled;
 
+    public DesktopDemoAccountInitializer(UserRepository userRepository,
+                                         UserProfileRepository userProfileRepository,
+                                         PasswordEncoder passwordEncoder) {
+        this.userRepository = userRepository;
+        this.userProfileRepository = userProfileRepository;
+        this.passwordEncoder = passwordEncoder;
+    }
+
     @Override
     public void run(ApplicationArguments args) {
         if (!enabled) {
+            log.info("已关闭桌面演示账号初始化（fitlife.desktop.demo-account=false）");
             return;
         }
         try {
-            if (userRepository.findByUsername(DEMO_USERNAME).isPresent()) {
+            if (userRepository.existsByUsername(DEMO_USERNAME)) {
+                log.info("桌面演示账号已存在：{}", DEMO_USERNAME);
                 return;
             }
+            User user = new User();
+            user.setUsername(DEMO_USERNAME);
+            user.setPassword(passwordEncoder.encode(DEMO_PASSWORD));
+            user.setRole(User.ROLE_USER);
+            user.setStatus(User.STATUS_ACTIVE);
+            user.setCreatedAt(LocalDateTime.now());
+            userRepository.save(user);
 
-            User user = userRepository.save(User.builder()
-                    .username(DEMO_USERNAME)
-                    .password(passwordEncoder.encode(DEMO_PASSWORD))
-                    .build());
+            UserProfile profile = new UserProfile();
+            profile.setUserId(user.getId());
+            profile.setName("演示用户");
+            profile.setGender("male");
+            profile.setAge(28);
+            profile.setHeight(175.0);
+            profile.setWeight(72.0);
+            profile.setGoal("减脂");
+            profile.setActivityLevel("moderate");
+            profile.setExperience("beginner");
+            profile.setWeeklyDays(3);
+            profile.setSessionMinutes(45);
+            profile.setEquipments("哑铃,瑜伽垫");
+            profile.setInjuries("");
+            profile.setHrRest(68);
+            userProfileRepository.save(profile);
 
-            profileRepository.save(UserProfile.builder()
-                    .userId(user.getId())
-                    .name("演示用户")
-                    .gender("female")
-                    .age(25)
-                    .height(165.0)
-                    .weight(60.0)
-                    .bodyFat(25.0)
-                    .goal("fat_loss")
-                    .activityLevel("moderate")
-                    .build());
-
-            log.info("已创建演示账号：{} / {}（可在页面内自行注册新账号）", DEMO_USERNAME, DEMO_PASSWORD);
+            log.info("已创建桌面演示账号：{} / {}（请首次登录后修改密码）", DEMO_USERNAME, DEMO_PASSWORD);
         } catch (Exception e) {
-            log.warn("演示账号初始化未完成（不影响使用，可自行注册）：{}", e.getMessage());
+            log.warn("桌面演示账号初始化失败（不影响启动）：{}", e.toString());
         }
     }
 }

@@ -1,0 +1,26 @@
+# ============================================================
+# 本地开发档案（spring.profiles.default=local 时自动加载）
+#
+# 这里只放「克隆下来就能跑」的公开开发值；真实密钥一律走环境变量或 .env
+# （start-fitlife.ps1 会自动生成 .env 并注入进程），生产部署用
+# --spring.profiles.active=prod 覆盖。
+#
+# 覆盖方式（优先级从低到高）：
+#   本文件 < 环境变量 < 命令行参数
+# ============================================================
+spring:
+  datasource:
+    username: ${DB_USER:root}
+    password: ${DB_PASS:888}
+
+jwt:
+  # 仅本地开发使用；长度必须 >= 32 字节，否则 JwtService 启动即失败
+  secret: ${JWT_SECRET:local-dev-only-fitlife-jwt-secret-please-change-me}
+
+logging:
+  level:
+    com.fitlife: DEBUG
+
+# 注意：不要在这里重写 ai.providers 列表。
+# Spring Boot 对「多处配置同一个 list」的语义是整体替换而不是按下标合并，
+# 只写一半字段会让 models 变成 null。GLM 的演示 Key 由 .env 注入（见 start-fitlife.ps1）。

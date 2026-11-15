@@ -24,4 +24,16 @@ public class ExerciseDTO {
     private String defaultReps;
     private String description;
     private String contraindication;
+
+    // ===== P5 寻源：动作库每条都能点开出处 =====
+
+    private String sourceType;
+    private String sourceTitle;
+    private String sourceUrl;
+    private String sourcePage;
+    private String evidenceLevel;
+    private String licenseNote;
+    private String reviewStatus;
+    /** 来源链接最近核验日期 */
+    private java.time.LocalDate lastVerifiedAt;
 }

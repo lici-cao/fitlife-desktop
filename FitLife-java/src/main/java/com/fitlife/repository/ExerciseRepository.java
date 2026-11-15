@@ -23,4 +23,22 @@ public interface ExerciseRepository extends JpaRepository<Exercise, Long> {
     @Query("SELECT e FROM Exercise e WHERE e.difficulty <= :level AND e.equipment IN :equipments ORDER BY e.category, e.muscleGroup, e.id")
     List<Exercise> findCandidates(@Param("level") Integer level,
                                   @Param("equipments") Collection<String> equipments);
+
+    // ===== P5 内容治理 =====
+
+    /** 只取已审核通过的动作参与计划编排（历史数据默认 APPROVED，行为不变） */
+    @Query("SELECT e FROM Exercise e WHERE e.difficulty <= :level AND e.equipment IN :equipments "
+            + "AND (e.reviewStatus IS NULL OR e.reviewStatus = 'APPROVED') ORDER BY e.category, e.muscleGroup, e.id")
+    List<Exercise> findApprovedCandidates(@Param("level") Integer level,
+                                          @Param("equipments") Collection<String> equipments);
+
+    List<Exercise> findByReviewStatusOrderByIdAsc(String reviewStatus);
+
+    boolean existsByNameIgnoreCase(String name);
+
+    @Query("SELECT COUNT(e) FROM Exercise e WHERE e.sourceUrl IS NULL OR e.sourceUrl = ''")
+    long countWithoutSource();
+
+    @Query("SELECT COUNT(e) FROM Exercise e WHERE e.evidenceLevel = :level")
+    long countByEvidenceLevel(@Param("level") String level);
 }
