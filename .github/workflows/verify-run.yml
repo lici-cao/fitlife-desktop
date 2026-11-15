@@ -195,7 +195,17 @@ jobs:
           else
             fail=$((fail+1)); say "- [FAIL] **计划未包含饮食方案** — dietDays 为 0/缺失"
           fi
-          req "AI 饮食建议(无 Key 应降级)" POST /api/ai/diet-suggestion '{"preference":"高蛋白","days":1}' "$TOKEN"
+          DIET_CODE=$(curl -s -o /tmp/diet.json -w '%{http_code}' -X POST "$BASE/api/ai/diet-suggestion" \
+            -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+            -d '{"preference":"高蛋白","days":1}')
+          DIET_MSG=$(head -c 220 /tmp/diet.json | tr '\n' ' ' | tr -d '\r')
+          if [ "$DIET_CODE" = "200" ]; then
+            pass=$((pass+1)); say "- [OK 200] **AI 饮食建议** — 已配置 Key，模型返回正常"
+          elif [ "$DIET_CODE" = "503" ]; then
+            pass=$((pass+1)); say "- [OK 503] **AI 饮食建议（无 Key 优雅降级）** — 按 P1 统一异常映射返回安全文案：$DIET_MSG"
+          else
+            fail=$((fail+1)); say "- [FAIL $DIET_CODE] **AI 饮食建议** — 期望 200 或 503，实际 $DIET_CODE：$DIET_MSG"
+          fi
           say ""
           say "## 8. 今日训练与打卡"
           req "今日训练卡" GET "/api/data/today-plan?date=$TODAY" - "$TOKEN"
