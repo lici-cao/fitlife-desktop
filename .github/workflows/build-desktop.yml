@@ -24,7 +24,7 @@ env:
   JAVA_VERSION: "17"
   NODE_VERSION: "22"
   APP_NAME: FitLife
-  APP_VERSION: ${{ inputs.app_version || '5.0.0' }}
+  APP_VERSION: ${{ inputs.app_version || '5.0.1' }}
 
 jobs:
   build-jar:
